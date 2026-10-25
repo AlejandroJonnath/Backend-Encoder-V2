@@ -1,0 +1,27 @@
+FROM node:20-bullseye-slim
+
+# Instalar Ghostscript, LibreOffice y fuentes tipográficas estándar para conversiones y compresión de hasta 2GB
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ghostscript \
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    fonts-liberation \
+    fonts-dejavu-core \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install --production
+
+COPY . .
+
+# Directorio temporal para archivos de hasta 2GB
+RUN mkdir -p /app/temp_uploads
+
+EXPOSE 3000
+
+CMD ["node", "src/app.js"]
