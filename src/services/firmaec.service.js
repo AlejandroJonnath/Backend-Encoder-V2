@@ -5,6 +5,7 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { P12Signer } from '@signpdf/signer-p12';
 import { pdflibAddPlaceholder } from '@signpdf/placeholder-pdf-lib';
 import { SignPdf } from '@signpdf/signpdf';
+import QRCode from 'qrcode';
 
 /**
  * Servicio de firma electrónica PAdES con certificado .p12
@@ -93,116 +94,148 @@ export async function firmarDocumentoPdf({
 
   const rectX = posicion.x || 50;
   const rectY = posicion.y || 50;
-  const rectAncho = posicion.ancho || 220;
-  const rectAlto = posicion.alto || 80;
+  // Dimensiones estándar compactas y finas (encaja exactamente en casillas de firma oficiales)
+  const rectAncho = 130;
+  const rectAlto = 40;
 
-  // ── Fondo exterior con sombra suave (rectángulo ligeramente mayor)
-  paginaObjetivo.drawRectangle({
-    x: rectX - 1,
-    y: rectY - 1,
-    width: rectAncho + 2,
-    height: rectAlto + 2,
-    color: rgb(0.80, 0.88, 0.98),
-    borderWidth: 0,
+  // ── Generar Código QR Oficial de Validación (Alta definición para escaneo rápido)
+  const textoQr = [
+    `FIRMADO POR: ${nombreTitular}`,
+    cedulaTitular ? `CI: ${cedulaTitular}` : null,
+    `FECHA: ${fechaStr}`,
+    `VALIDACION: www.firmadigital.gob.ec`
+  ].filter(Boolean).join('\n');
+
+  const qrBuffer = await QRCode.toBuffer(textoQr, {
+    type: 'png',
+    margin: 0,
+    width: 200,
+    errorCorrectionLevel: 'M',
+    color: {
+      dark: '#09090B', // Dark Zinc
+      light: '#ffffff'
+    }
   });
 
-  // ── Fondo principal blanco
+  const qrImage = await pdfDoc.embedPng(qrBuffer);
+
+  // ── 1. Contenedor base: blanco puro con hairline border fino (0.5 pt)
   paginaObjetivo.drawRectangle({
     x: rectX,
     y: rectY,
     width: rectAncho,
     height: rectAlto,
-    color: rgb(0.97, 0.98, 1.0),
-    borderColor: rgb(0.08, 0.28, 0.60),
-    borderWidth: 1.8,
-  });
-
-  // ── Banda de color superior (azul FirmaEC)
-  paginaObjetivo.drawRectangle({
-    x: rectX,
-    y: rectY + rectAlto - 16,
-    width: rectAncho,
-    height: 16,
-    color: rgb(0.08, 0.28, 0.60),
-    borderWidth: 0,
-  });
-
-  // ── Título en la banda superior
-  paginaObjetivo.drawText('FIRMADO DIGITALMENTE', {
-    x: rectX + 6,
-    y: rectY + rectAlto - 12,
-    size: 7.5,
-    font: fontBold,
     color: rgb(1, 1, 1),
+    borderColor: rgb(0.89, 0.89, 0.91), // Zinc-200 (#E4E4E7)
+    borderWidth: 0.5,
   });
 
-  // ── Ícono de verificación [OK]
-  paginaObjetivo.drawText('[OK]', {
-    x: rectX + rectAncho - 24,
-    y: rectY + rectAlto - 13,
-    size: 7,
-    font: fontBold,
-    color: rgb(0.15, 0.75, 0.30),
+  // ── 2. Código QR ampliado (34x34 pt) centrado verticalmente para óptima legibilidad
+  const qrSize = 34;
+  const qrX = rectX + 3.5;
+  const qrY = rectY + (rectAlto - qrSize) / 2;
+
+  paginaObjetivo.drawImage(qrImage, {
+    x: qrX,
+    y: qrY,
+    width: qrSize,
+    height: qrSize,
   });
 
-  // ── Nombre del firmante (limitado a 34 chars)
-  const nombreCorto = nombreTitular.length > 34 ? nombreTitular.substring(0, 33) + '…' : nombreTitular;
-  paginaObjetivo.drawText(nombreCorto, {
-    x: rectX + 6,
-    y: rectY + rectAlto - 28,
-    size: 8.5,
-    font: fontBold,
-    color: rgb(0.05, 0.15, 0.40),
+  // ── 3. Divisor vertical fino (0.5 pt) entre QR y metadatos (Shadcn style)
+  const sepX = qrX + qrSize + 3.5;
+  paginaObjetivo.drawLine({
+    start: { x: sepX, y: rectY + 3 },
+    end: { x: sepX, y: rectY + rectAlto - 3 },
+    color: rgb(0.89, 0.89, 0.91), // Zinc-200 (#E4E4E7)
+    thickness: 0.5,
   });
 
-  // ── CI / RUC si está disponible
-  if (cedulaTitular) {
-    paginaObjetivo.drawText(`CI/RUC: ${cedulaTitular}`, {
-      x: rectX + 6,
-      y: rectY + rectAlto - 40,
-      size: 7,
-      font: fontNormal,
-      color: rgb(0.25, 0.25, 0.35),
-    });
+  // ── 4. Columna de Metadatos con ajuste automático multilínea para nombres largos
+  const textX = sepX + 4;
+  const maxWidth = rectAncho - (textX - rectX) - 3;
+
+  function dividirEnLineas(texto, font, size, maxW) {
+    const palabras = (texto || '').trim().split(/\s+/);
+    const resultado = [];
+    let lineaActual = '';
+    for (const palabra of palabras) {
+      const intento = lineaActual ? `${lineaActual} ${palabra}` : palabra;
+      if (font.widthOfTextAtSize(intento, size) <= maxW) {
+        lineaActual = intento;
+      } else {
+        if (lineaActual) resultado.push(lineaActual);
+        lineaActual = palabra;
+      }
+    }
+    if (lineaActual) resultado.push(lineaActual);
+    return resultado;
   }
 
-  // ── Fecha de firma
-  paginaObjetivo.drawText(`Fecha: ${fechaStr}`, {
-    x: rectX + 6,
-    y: rectY + rectAlto - (cedulaTitular ? 52 : 42),
-    size: 6.8,
+  function obtenerLineasNombre(texto, font) {
+    let size = 5.8;
+    let lineas = dividirEnLineas(texto, font, size, maxWidth);
+    if (lineas.length > 2) {
+      size = 5.0;
+      lineas = dividirEnLineas(texto, font, size, maxWidth);
+    }
+    if (lineas.length > 2) {
+      size = 4.4;
+      lineas = dividirEnLineas(texto, font, size, maxWidth);
+    }
+    return { lineas, size };
+  }
+
+  const { lineas: lineasNombre, size: lineSize } = obtenerLineasNombre(nombreTitular, fontBold);
+
+  // Fila 1: Título "Firmado electrónicamente" (Acento Sky Blue de EncoderGoti)
+  paginaObjetivo.drawText('Firmado electrónicamente', {
+    x: textX,
+    y: rectY + rectAlto - 8.5,
+    size: 4.6,
     font: fontNormal,
-    color: rgb(0.25, 0.25, 0.35),
+    color: rgb(0.01, 0.52, 0.78), // #0284C7
   });
 
-  // ── Razón
-  const razonCorta = razon.length > 32 ? razon.substring(0, 31) + '…' : razon;
-  paginaObjetivo.drawText(`Razón: ${razonCorta}`, {
-    x: rectX + 6,
-    y: rectY + rectAlto - (cedulaTitular ? 63 : 53),
-    size: 6.5,
-    font: fontNormal,
-    color: rgb(0.25, 0.25, 0.35),
-  });
-
-  // ── Línea separadora inferior
-  paginaObjetivo.drawLine({
-    start: { x: rectX + 4, y: rectY + 10 },
-    end: { x: rectX + rectAncho - 4, y: rectY + 10 },
-    color: rgb(0.08, 0.28, 0.60),
-    thickness: 0.5,
-    opacity: 0.4,
-  });
-
-  // ── Emisor / validación
-  const emisorCorto = entidadEmisora.length > 40 ? entidadEmisora.substring(0, 39) + '…' : entidadEmisora;
-  paginaObjetivo.drawText(emisorCorto, {
-    x: rectX + 6,
-    y: rectY + 4,
-    size: 5.5,
-    font: fontNormal,
-    color: rgb(0.15, 0.45, 0.20),
-  });
+  // Fila 2: Nombre del titular (Multilínea para nombres y apellidos completos)
+  if (lineasNombre.length > 1) {
+    paginaObjetivo.drawText(lineasNombre[0], {
+      x: textX,
+      y: rectY + rectAlto - 16.5,
+      size: lineSize,
+      font: fontBold,
+      color: rgb(0.04, 0.04, 0.05), // #09090B
+    });
+    paginaObjetivo.drawText(lineasNombre[1], {
+      x: textX,
+      y: rectY + rectAlto - 24.0,
+      size: lineSize,
+      font: fontBold,
+      color: rgb(0.04, 0.04, 0.05), // #09090B
+    });
+    paginaObjetivo.drawText(cedulaTitular ? `CI: ${cedulaTitular}` : 'Firma Válida', {
+      x: textX,
+      y: rectY + rectAlto - 32.5,
+      size: 4.8,
+      font: fontNormal,
+      color: rgb(0.44, 0.44, 0.48), // #71717A
+    });
+  } else {
+    paginaObjetivo.drawText(lineasNombre[0] || nombreTitular, {
+      x: textX,
+      y: rectY + rectAlto - 19.0,
+      size: 6.2,
+      font: fontBold,
+      color: rgb(0.04, 0.04, 0.05), // #09090B
+    });
+    paginaObjetivo.drawText(cedulaTitular ? `CI: ${cedulaTitular}` : 'Firma Válida', {
+      x: textX,
+      y: rectY + rectAlto - 29.0,
+      size: 5.0,
+      font: fontNormal,
+      color: rgb(0.44, 0.44, 0.48), // #71717A
+    });
+  }
 
   // ─────────────────────────────────────────────────────────────
   // 3. Agregar placeholder AcroForm para firma PKCS#7 detached

@@ -16,8 +16,8 @@ export function responderArchivoOJson(req, res, rutaArchivo, nombreArchivoDescar
   const nombreFisico = path.basename(rutaArchivo);
   const descargaUrl = `${protocolo}://${host}/api/descargar/${nombreFisico}?nombre=${encodeURIComponent(nombreArchivoDescarga)}`;
 
-  const quiereJson = req.headers['x-retorno-json'] === 'true' || 
-                     req.headers['accept']?.includes('application/json');
+  const quiereJson = req.headers['x-retorno-json'] === 'true' ||
+    req.headers['accept']?.includes('application/json');
 
   if (quiereJson) {
     return res.json({

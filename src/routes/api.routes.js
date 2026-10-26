@@ -8,20 +8,11 @@ import iaRoutes from './ia.routes.js';
 
 const router = Router();
 
-// ====================================================================
 // 1. RUTA PÚBLICA DE DESCARGA DIRECTA (Archivos generados)
-// ====================================================================
 router.get('/descargar/:nombreArchivo', descargarArchivoController);
-
-// ====================================================================
 // 2. MIDDLEWARE DE AUTENTICACIÓN PARA OPERACIONES PROTEGIDAS
-// ====================================================================
 router.use(verificarAutenticacion);
-
-// ====================================================================
 // 3. MÓDULOS DE RUTAS MODULARES
-// ====================================================================
-
 // Firma electrónica digital .p12 (FirmaEC)
 router.use('/pdf', firmaRoutes);
 
