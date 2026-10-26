@@ -1,0 +1,38 @@
+# Git y dependencias
+.git
+.gitignore
+node_modules
+package-lock.json.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secretos y variables de entorno
+.env
+.env.*
+!.env.example
+
+# Archivos temporales y certificados
+temp_uploads/*
+!temp_uploads/.gitkeep
+uploads/
+temp/
+*.tmp
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+
+# Pruebas y documentación
+tests/
+*.test.js
+*.spec.js
+coverage/
+*.md
+
+# Editores y sistema
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

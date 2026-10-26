@@ -22,6 +22,11 @@ export const CONFIGURACION = {
   ARCHIVOS: {
     RUTA_TEMPORAL: path.resolve(process.env.RUTA_ARCHIVOS_TEMPORALES || './temp_uploads'),
     LIMITE_TAMANIO_BYTES: parseInt(process.env.LIMITE_TAMANIO_ARCHIVO_BYTES || '2147483648', 10), // 2GB
+    TTL_MINUTOS: parseInt(process.env.TTL_ARCHIVOS_TEMPORALES_MINUTOS || '30', 10),
+  },
+
+  SEGURIDAD: {
+    PERMITIR_ACCESO_ANONIMO: process.env.PERMITIR_ACCESO_ANONIMO === 'true',
   },
 
   IDIOMAS_TRADUCCION_PERMITIDOS: [
