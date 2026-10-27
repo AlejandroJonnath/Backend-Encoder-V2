@@ -26,7 +26,7 @@ export async function firmarDocumentoPdf({
   // ─────────────────────────────────────────────────────────────
   // 1. Validar y leer el certificado P12
   // ─────────────────────────────────────────────────────────────
-  const p12Buffer = fs.readFileSync(rutaP12);
+  const p12Buffer = await fs.promises.readFile(rutaP12);
   if (!p12Buffer || p12Buffer.length < 50) {
     throw new Error('El archivo del certificado .p12 está incompleto o no se pudo leer correctamente.');
   }
@@ -83,7 +83,7 @@ export async function firmarDocumentoPdf({
   // ─────────────────────────────────────────────────────────────
   // 2. Cargar PDF y dibujar la estampa visual profesional (estilo FirmaEC)
   // ─────────────────────────────────────────────────────────────
-  const pdfBytes = fs.readFileSync(rutaPdf);
+  const pdfBytes = await fs.promises.readFile(rutaPdf);
   const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const paginas = pdfDoc.getPages();
   const indicePagina = Math.max(0, Math.min((posicion.pagina || 1) - 1, paginas.length - 1));
@@ -273,7 +273,7 @@ export async function firmarDocumentoPdf({
   const nombreBase = path.basename(rutaPdf, path.extname(rutaPdf)).replace(/_signed$/, '');
   const rutaFinalFirmado = path.join(dirSalida, `${nombreBase}_signed.pdf`);
 
-  fs.writeFileSync(rutaFinalFirmado, pdfFirmadoBuffer);
+  await fs.promises.writeFile(rutaFinalFirmado, pdfFirmadoBuffer);
 
   return {
     rutaArchivo: rutaFinalFirmado,

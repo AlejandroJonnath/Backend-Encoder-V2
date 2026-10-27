@@ -53,9 +53,12 @@ export function eliminarDirectorioSeguro(rutaDirectorio) {
  * @param {number} [opciones.ttlMinutos] - Tiempo de vida máximo en minutos
  * @returns {number} - Cantidad de elementos eliminados
  */
-export function limpiarArchivosExpirados({ ttlMinutos = CONFIGURACION.ARCHIVOS.TTL_MINUTOS } = {}) {
+export async function limpiarArchivosExpirados({ ttlMinutos = CONFIGURACION.ARCHIVOS.TTL_MINUTOS } = {}) {
   const dirTemp = CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL;
-  if (!fs.existsSync(dirTemp)) {
+
+  try {
+    await fs.promises.access(dirTemp);
+  } catch {
     return 0;
   }
 
@@ -64,7 +67,7 @@ export function limpiarArchivosExpirados({ ttlMinutos = CONFIGURACION.ARCHIVOS.T
   let eliminados = 0;
 
   try {
-    const entradas = fs.readdirSync(dirTemp);
+    const entradas = await fs.promises.readdir(dirTemp);
 
     for (const entrada of entradas) {
       // Proteger archivo .gitkeep
@@ -73,20 +76,20 @@ export function limpiarArchivosExpirados({ ttlMinutos = CONFIGURACION.ARCHIVOS.T
       const rutaCompleta = path.join(dirTemp, entrada);
 
       try {
-        const stats = fs.statSync(rutaCompleta);
+        const stats = await fs.promises.stat(rutaCompleta);
         const edadMs = ahora - stats.mtimeMs;
 
         if (edadMs > limiteMs) {
           if (stats.isDirectory()) {
-            fs.rmSync(rutaCompleta, { recursive: true, force: true });
+            await fs.promises.rm(rutaCompleta, { recursive: true, force: true });
             eliminados++;
           } else {
-            fs.unlinkSync(rutaCompleta);
+            await fs.promises.unlink(rutaCompleta);
             eliminados++;
           }
         }
-      } catch (errElemento) {
-        // En caso de que otro proceso haya borrado el archivo en paralelo
+      } catch {
+        // Otro proceso pudo eliminar el archivo en paralelo
         continue;
       }
     }
@@ -111,11 +114,15 @@ export function iniciarLimpiadorPeriodico(intervaloMs = 15 * 60 * 1000) {
   }
 
   // Limpieza inicial al arrancar el servidor
-  limpiarArchivosExpirados();
+  limpiarArchivosExpirados().catch(err =>
+    console.error('[Cleanup] Error en limpieza inicial:', err.message)
+  );
 
-  // Programar barridos recurrentes
+  // Programar barridos recurrentes (el Promise se maneja con .catch para no silenciar errores)
   intervaloId = setInterval(() => {
-    limpiarArchivosExpirados();
+    limpiarArchivosExpirados().catch(err =>
+      console.error('[Cleanup] Error en barrido periódico:', err.message)
+    );
   }, intervaloMs);
 
   if (intervaloId.unref) {

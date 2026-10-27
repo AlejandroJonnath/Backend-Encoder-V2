@@ -7,7 +7,7 @@ import { CONFIGURACION } from '../config/constantes.js';
  * Extrae texto de un archivo PDF
  */
 export async function extraerTextoDePdf(rutaPdf) {
-  const dataBuffer = fs.readFileSync(rutaPdf);
+  const dataBuffer = await fs.promises.readFile(rutaPdf);
   const data = await pdfParse(dataBuffer);
   return {
     texto: data.text,

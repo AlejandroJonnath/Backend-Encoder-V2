@@ -25,9 +25,9 @@ export async function convertirImagenAPdf(rutaImagen) {
   const nombreBase = path.basename(rutaImagen, extension);
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
 
-  // Obtener metadatos y convertir imagen a JPEG o PNG optimizado
-  const metadata = await sharp(rutaImagen).metadata();
-  const imagenBuffer = await sharp(rutaImagen).toBuffer();
+  // Obtener metadatos y buffer en una sola pasada (evita doble decode de la imagen)
+  const { data: imagenBuffer, info: metadata } = await sharp(rutaImagen)
+    .toBuffer({ resolveWithObject: true });
 
   const pdfDoc = await PDFDocument.create();
   let imagenIncrustada;
@@ -52,7 +52,7 @@ export async function convertirImagenAPdf(rutaImagen) {
   });
 
   const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
-  fs.writeFileSync(rutaFinalPdf, pdfBytes);
+  await fs.promises.writeFile(rutaFinalPdf, pdfBytes);
 
   return {
     rutaArchivo: rutaFinalPdf,
@@ -64,7 +64,7 @@ export async function convertirImagenAPdf(rutaImagen) {
  * Convierte archivos de texto plano (.txt) a PDF con paginación
  */
 export async function convertirTextoPlanoAPdf(rutaTexto) {
-  const contenido = fs.readFileSync(rutaTexto, 'utf-8');
+  const contenido = await fs.promises.readFile(rutaTexto, 'utf-8');
   const dirSalida = path.dirname(rutaTexto);
   const nombreBase = path.basename(rutaTexto, path.extname(rutaTexto));
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
@@ -92,7 +92,7 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
   }
 
   const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
-  fs.writeFileSync(rutaFinalPdf, pdfBytes);
+  await fs.promises.writeFile(rutaFinalPdf, pdfBytes);
 
   return {
     rutaArchivo: rutaFinalPdf,
@@ -131,7 +131,7 @@ export async function convertirWordAPdf(rutaDocx) {
   // Fallback extremo para .doc binario clásico
   if (!htmlCuerpo || htmlCuerpo.trim() === '') {
     try {
-      const buffer = fs.readFileSync(rutaDocx);
+      const buffer = await fs.promises.readFile(rutaDocx);
       const contenidoStr = buffer.toString('latin1');
       const coincidencias = contenidoStr.match(/[\x20-\x7E\xC0-\xFF]{4,}/g) || [];
       const textoLimpio = coincidencias.filter(s => !s.startsWith('Microsoft') && !s.includes('Root Entry')).join(' ');
@@ -194,7 +194,7 @@ export async function convertirWordAPdf(rutaDocx) {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
     const page = await browser.newPage();
-    await page.setContent(htmlDocumento, { waitUntil: 'networkidle0', timeout: 30000 });
+    await page.setContent(htmlDocumento, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await page.pdf({
       path: rutaFinalPdf,
       format: 'A4',
@@ -223,7 +223,7 @@ export async function convertirPowerPointAPdf(rutaPptx) {
   let diapositivasHtml = [];
 
   try {
-    const data = fs.readFileSync(rutaPptx);
+    const data = await fs.promises.readFile(rutaPptx);
     const zip = await JSZip.loadAsync(data);
 
     // Buscar archivos de slides ppt/slides/slideX.xml
@@ -408,7 +408,7 @@ export async function convertirPowerPointAPdf(rutaPptx) {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
     const page = await browser.newPage();
-    await page.setContent(htmlCompleto, { waitUntil: 'networkidle0', timeout: 30000 });
+    await page.setContent(htmlCompleto, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await page.pdf({
       path: rutaFinalPdf,
       width: '297mm',

@@ -45,8 +45,8 @@ export async function firmarPdfController(req, res, next) {
   try {
     const archivoPdf = req.file || req.files?.pdf?.[0];
     
-    // La contraseña debe enviarse prioritariamente en el cuerpo por seguridad
-    const contrasena = req.body?.contrasena || req.headers['x-p12-contrasena'];
+    // La contraseña debe enviarse EXCLUSIVAMENTE en el body de la petición (nunca en headers HTTP)
+    const contrasena = req.body?.contrasena;
 
     if (!archivoPdf) {
       throw new AppError('Debes proporcionar el archivo PDF a firmar.', 400);

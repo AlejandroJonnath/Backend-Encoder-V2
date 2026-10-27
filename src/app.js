@@ -9,6 +9,7 @@ import { validarVariablesEntorno } from './config/env.validator.js';
 import { iniciarLimpiadorPeriodico, detenerLimpiadorPeriodico } from './services/cleanup.service.js';
 import { manejarErroresGlobales } from './middlewares/error.middleware.js';
 import rutasApi from './routes/api.routes.js';
+import { fileURLToPath } from 'url';
 
 // 1. Validar entorno al iniciar
 validarVariablesEntorno();
@@ -30,17 +31,21 @@ app.use(helmet({
 }));
 
 app.use(cors({
-
-  origin: '*', // Permitir peticiones desde Expo Go / Web
-
+  origin: process.env.NODE_ENV === 'production'
+    ? [process.env.URL_FRONTEND].filter(Boolean)
+    : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-
-  allowedHeaders: '*'
-
+  // Headers explícitos — nunca usar '*' en producción
+  allowedHeaders: [
+    'Content-Type', 'Authorization', 'Accept',
+    'x-parametros', 'x-p12-base64', 'x-sesion-id',
+    'x-token-p12', 'x-retorno-json'
+  ]
 }));
 
 // Morgan con sanitización para evitar imprimir contraseñas o certificados en logs
-app.use(morgan('dev'));
+// 'combined' en producción es compatible con Datadog, Loki, CloudWatch
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -103,7 +108,7 @@ app.use('/api', rutasApi);
 app.use(manejarErroresGlobales);
 
 // 8. Iniciar servidor HTTP y limpiador periódico únicamente cuando se ejecuta directamente (no en tests)
-import { fileURLToPath } from 'url';
+// fileURLToPath importado al inicio del archivo
 
 const esModuloPrincipal = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
