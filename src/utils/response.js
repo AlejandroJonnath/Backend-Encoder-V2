@@ -11,8 +11,8 @@ import path from 'path';
  * @param {Object} [extras={}] - Propiedades adicionales para la respuesta JSON
  */
 export function responderArchivoOJson(req, res, rutaArchivo, nombreArchivoDescarga, extras = {}) {
-  const host = req.get('host') || 'localhost:3000';
-  const protocolo = req.protocol || 'http';
+  const host = req.get('x-forwarded-host') || req.get('host') || 'localhost:3000';
+  const protocolo = req.get('x-forwarded-proto') || req.protocol || 'http';
   const nombreFisico = path.basename(rutaArchivo);
   const descargaUrl = `${protocolo}://${host}/api/descargar/${nombreFisico}?nombre=${encodeURIComponent(nombreArchivoDescarga)}`;
 

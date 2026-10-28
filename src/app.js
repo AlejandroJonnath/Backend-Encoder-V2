@@ -16,6 +16,9 @@ validarVariablesEntorno();
 
 const app = express();
 
+// Confiar en el reverse proxy (Render, Cloudflare, etc.) para detectar HTTPS correctamente
+app.set('trust proxy', 1);
+
 // 2. Asegurar que exista la carpeta temporal para streaming
 if (!fs.existsSync(CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL)) {
 
