@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const CONFIGURACION = {
-  PUERTO: process.env.PUERTO || 3000,
+  PUERTO: process.env.PORT || process.env.PUERTO || 3000,
   ENTORNO: process.env.ENTORNO || 'desarrollo',
   URL_FRONTEND: process.env.URL_FRONTEND || 'http://localhost:8081',
 

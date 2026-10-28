@@ -31,8 +31,8 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? [process.env.URL_FRONTEND].filter(Boolean)
+  origin: (process.env.NODE_ENV === 'production' && process.env.URL_FRONTEND)
+    ? [process.env.URL_FRONTEND]
     : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   // Headers explícitos — nunca usar '*' en producción
