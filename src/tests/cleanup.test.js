@@ -38,7 +38,7 @@ describe('2. Pruebas de Limpieza y Ciclo de Vida de temp_uploads', () => {
     assert.equal(fs.existsSync(dirPrueba), false);
   });
 
-  it('limpiarArchivosExpirados debe eliminar elementos que superen el TTL pero preservar .gitkeep', () => {
+  it('limpiarArchivosExpirados debe eliminar elementos que superen el TTL pero preservar .gitkeep', async () => {
     const dirTemp = CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL;
     const archivoViejo = path.join(dirTemp, `expirado_${Date.now()}.tmp`);
     fs.writeFileSync(archivoViejo, 'datos viejos');
@@ -51,9 +51,10 @@ describe('2. Pruebas de Limpieza y Ciclo de Vida de temp_uploads', () => {
     const gitkeep = path.join(dirTemp, '.gitkeep');
     if (!fs.existsSync(gitkeep)) fs.writeFileSync(gitkeep, '');
 
-    const eliminados = limpiarArchivosExpirados({ ttlMinutos: 30 });
-    assert.ok(eliminados >= 1);
-    assert.equal(fs.existsSync(archivoViejo), false);
+    // limpiarArchivosExpirados es async: se debe await para esperar el resultado
+    const eliminados = await limpiarArchivosExpirados({ ttlMinutos: 30 });
+    assert.ok(eliminados >= 1, `Se esperaba >= 1 eliminado, pero se eliminaron ${eliminados}`);
+    assert.equal(fs.existsSync(archivoViejo), false, 'El archivo expirado debe haberse eliminado');
     assert.equal(fs.existsSync(gitkeep), true, '.gitkeep debe permanecer intacto');
   });
 

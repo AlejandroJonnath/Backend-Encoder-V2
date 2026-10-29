@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: backend-encoder-v2
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /salud
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ENTORNO
+        value: produccion
+      - key: SUPABASE_BUCKET_DOCUMENTOS
+        value: pdf_vault
+      - key: RUTA_ARCHIVOS_TEMPORALES
+        value: ./temp_uploads
+      - key: LIMITE_TAMANIO_ARCHIVO_BYTES
+        value: "2147483648"
+      - key: TTL_ARCHIVOS_TEMPORALES_MINUTOS
+        value: "30"
+

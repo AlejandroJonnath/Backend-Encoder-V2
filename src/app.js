@@ -7,6 +7,7 @@ import path from 'path';
 import { CONFIGURACION } from './config/constantes.js';
 import { validarVariablesEntorno } from './config/env.validator.js';
 import { iniciarLimpiadorPeriodico, detenerLimpiadorPeriodico } from './services/cleanup.service.js';
+import { obtenerBinarioGhostscript } from './services/compress.service.js';
 import { manejarErroresGlobales } from './middlewares/error.middleware.js';
 import rutasApi from './routes/api.routes.js';
 import { fileURLToPath } from 'url';
@@ -92,17 +93,18 @@ app.use((req, res, next) => {
 });
 
 // 5. Ruta de estado del servidor
-app.get('/salud', (req, res) => {
+app.get('/salud', async (req, res) => {
+  const binarioGs = await obtenerBinarioGhostscript();
 
   res.json({
     estado: 'activo',
     servidor: 'API de Operaciones PDF & FirmaEC',
     modeloIa: CONFIGURACION.GROQ.MODELO,
     limiteArchivo: '2GB',
+    ghostscript: binarioGs ? `activo (${binarioGs})` : 'no detectado',
     ttlTemporalesMin: CONFIGURACION.ARCHIVOS.TTL_MINUTOS,
     fecha: new Date().toISOString()
   });
-
 });
 
 // 6. Enrutar API principal

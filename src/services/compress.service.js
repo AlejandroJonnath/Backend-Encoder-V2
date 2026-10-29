@@ -6,17 +6,30 @@ import { PDFDocument } from 'pdf-lib';
 
 const execPromesa = util.promisify(exec);
 
+// Cache en memoria para no invocar subshells redundantes de detección en cada petición
+let binarioGsCache = undefined;
+
 /**
  * Detecta qué binario de Ghostscript está disponible en el sistema operativo
  */
-async function obtenerBinarioGhostscript() {
-  const candidatos = ['gswin64c', 'gs', 'gswin32c'];
+export async function obtenerBinarioGhostscript() {
+  if (binarioGsCache !== undefined) {
+    return binarioGsCache;
+  }
+
+  const candidatos = process.platform === 'win32'
+    ? ['gswin64c', 'gs', 'gswin32c']
+    : ['gs', 'gswin64c', 'gswin32c'];
+
   for (const bin of candidatos) {
     try {
       await execPromesa(`${bin} -v`);
+      binarioGsCache = bin;
       return bin;
     } catch (_) {}
   }
+
+  binarioGsCache = null;
   return null;
 }
 
@@ -39,44 +52,55 @@ export async function comprimirDocumentoPdf({ rutaPdf, calidad = 'ebook' }) {
 
   if (binarioGs) {
     try {
-      // Parámetros avanzados de compresión idénticos a los servicios de optimización documental:
-      // -dPDFSETTINGS=/ebook (150 DPI) para balance perfecto entre fidelidad y reducción >50%
-      // -dDownsampleColorImages=true y Bicubic a 144 DPI para fotos y escaneos
-      // -dDetectDuplicateImages=true para unificar imágenes idénticas
-      // -dCompressFonts=true para empaquetado de tipografías
+      // Parámetros de compresión industrial:
+      // -dPassThroughJPEGImages=false: FUERZA la recompresión y remuestreo de JPEGs incrustados
+      // -dColorImageFilter=/DCTEncode y -dAutoFilterColorImages=false: Aplica algoritmo JPEG con remuestreo bicúbico
+      // -dCompatibilityLevel=1.5: Habilita soporte nativo para flujos de objetos (Object Streams)
       const resolucion = calidad === 'screen' ? 72 : 144;
       const pdfSettings = calidad === 'screen' ? '/screen' : '/ebook';
 
-      const comandoGs = `"${binarioGs}" -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=${pdfSettings} ` +
+      const comandoGs = `"${binarioGs}" -sDEVICE=pdfwrite -dCompatibilityLevel=1.5 -dPDFSETTINGS=${pdfSettings} ` +
         `-dNOPAUSE -dQUIET -dBATCH ` +
         `-dDownsampleColorImages=true -dColorImageDownsampleType=/Bicubic -dColorImageResolution=${resolucion} ` +
         `-dDownsampleGrayImages=true -dGrayImageDownsampleType=/Bicubic -dGrayImageResolution=${resolucion} ` +
         `-dDownsampleMonoImages=true -dMonoImageDownsampleType=/Bicubic -dMonoImageResolution=${resolucion} ` +
+        `-dAutoFilterColorImages=false -dColorImageFilter=/DCTEncode ` +
+        `-dAutoFilterGrayImages=false -dGrayImageFilter=/DCTEncode ` +
+        `-dPassThroughJPEGImages=false ` +
         `-dDetectDuplicateImages=true -dCompressFonts=true ` +
         `-sOutputFile="${rutaFinalComprimido}" "${rutaPdf}"`;
 
-      await execPromesa(comandoGs, { maxBuffer: 1024 * 1024 * 100 });
+      await execPromesa(comandoGs, {
+        timeout: 90000, // Timeout de 90s para evitar cuelgues indefinidos en el reverse proxy
+        maxBuffer: 1024 * 1024 * 100
+      });
 
       if (fs.existsSync(rutaFinalComprimido) && fs.statSync(rutaFinalComprimido).size > 0) {
         exitoGhostscript = true;
       }
     } catch (errGs) {
-      console.warn(`Ghostscript (${binarioGs}) falló:`, errGs.message);
+      console.warn(`[Compress] Ghostscript (${binarioGs}) falló:`, errGs.message);
     }
   }
 
-  // 2. Motor de compresión interno con pdf-lib (fallback si Ghostscript no operó)
+  // 2. Motor de compresión interno con pdf-lib (fallback seguro si Ghostscript no operó)
   if (!exitoGhostscript) {
-    const pdfBytes = fs.readFileSync(rutaPdf);
-    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    try {
+      const pdfBytes = fs.readFileSync(rutaPdf);
+      const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
 
-    const bytesOptimizados = await pdfDoc.save({
-      useObjectStreams: true,
-      addDefaultPage: false,
-      objectsPerTick: 100
-    });
+      // objectsPerTick: 1000 evita ahogar el event loop con miles de setImmediate innecesarios
+      const bytesOptimizados = await pdfDoc.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+        objectsPerTick: 1000
+      });
 
-    fs.writeFileSync(rutaFinalComprimido, bytesOptimizados);
+      fs.writeFileSync(rutaFinalComprimido, bytesOptimizados);
+    } catch (errPdfLib) {
+      console.warn('[Compress] Fallback pdf-lib falló, preservando original:', errPdfLib.message);
+      fs.copyFileSync(rutaPdf, rutaFinalComprimido);
+    }
   }
 
   let statsComprimido = fs.statSync(rutaFinalComprimido);
