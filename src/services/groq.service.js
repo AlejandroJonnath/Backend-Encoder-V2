@@ -3,6 +3,59 @@ import pdfParse from 'pdf-parse';
 import { groq, MODELO_GROQ_POR_DEFECTO } from '../config/groq.js';
 import { CONFIGURACION } from '../config/constantes.js';
 
+// Modelos ordenados por prioridad y capacidad de tokens por minuto (OTPM)
+const MODELOS_FALLBACK = Array.from(new Set([
+  MODELO_GROQ_POR_DEFECTO,
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant'
+])).filter(Boolean);
+
+/**
+ * Ejecuta una llamada a Groq con tolerancia a fallos y rotación automática de modelos
+ * si el modelo configurado (ej. Qwen) excede el límite estricto de OTPM (1000 tokens/min).
+ */
+async function invocarGroqConFallback({ messages, temperature = 0.2, maxTokens = 850 }) {
+  let ultimoError = null;
+
+  for (let i = 0; i < MODELOS_FALLBACK.length; i++) {
+    const modeloActual = MODELOS_FALLBACK[i];
+    try {
+      // Ajustar max_tokens si el modelo es Qwen en capa gratuita (límite OTPM de 1000)
+      const tokensAjustados = (modeloActual.includes('qwen') && maxTokens > 850)
+        ? 850
+        : maxTokens;
+
+      const respuesta = await groq.chat.completions.create({
+        model: modeloActual,
+        messages,
+        temperature,
+        max_tokens: tokensAjustados
+      });
+
+      return {
+        contenido: respuesta.choices[0]?.message?.content?.trim(),
+        modeloUtilizado: modeloActual,
+        tokensUsados: respuesta.usage
+      };
+    } catch (err) {
+      ultimoError = err;
+      const esErrorLimite = err.status === 429 ||
+        err.message?.includes('rate_limit') ||
+        err.message?.includes('tokens') ||
+        err.message?.includes('OTPM') ||
+        err.message?.includes('Limit 1000');
+
+      if (esErrorLimite && i < MODELOS_FALLBACK.length - 1) {
+        console.warn(`[Groq AI] Modelo ${modeloActual} alcanzó límite de tasa/tokens. Alternando a ${MODELOS_FALLBACK[i + 1]}...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw ultimoError || new Error('No se pudo procesar la solicitud con los modelos disponibles.');
+}
+
 /**
  * Extrae texto de un archivo PDF
  */
@@ -47,20 +100,19 @@ REGLAS DE ORO:
 - Preserva datos clave, porcentajes, nombres, fechas y terminología técnica exacta.
 `;
 
-  const respuesta = await groq.chat.completions.create({
-    model: MODELO_GROQ_POR_DEFECTO,
+  const { contenido, modeloUtilizado, tokensUsados } = await invocarGroqConFallback({
     messages: [
       { role: 'system', content: promptSistema },
       { role: 'user', content: `Resume de forma clara y concisa el siguiente documento:\n\n${textoProcesar}` }
     ],
     temperature: 0.25,
-    max_tokens: 2500
+    maxTokens: 800
   });
 
   return {
-    resumen: respuesta.choices[0]?.message?.content?.trim(),
-    modeloUtilizado: MODELO_GROQ_POR_DEFECTO,
-    tokensUsados: respuesta.usage
+    resumen: contenido,
+    modeloUtilizado,
+    tokensUsados
   };
 }
 
@@ -96,21 +148,20 @@ REGLAS DE MÁXIMA EXACTITUD:
 5. Salida limpia: Responde ÚNICAMENTE con el texto traducido. Está terminantemente prohibido agregar comentarios como "Aquí está la traducción:".
 `;
 
-  const respuesta = await groq.chat.completions.create({
-    model: MODELO_GROQ_POR_DEFECTO,
+  const { contenido, modeloUtilizado, tokensUsados } = await invocarGroqConFallback({
     messages: [
       { role: 'system', content: promptSistema },
       { role: 'user', content: `Traduce textualmente del ${idiomaOrigen} al ${idiomaDestino}:\n\n${textoProcesar}` }
     ],
     temperature: 0.1,
-    max_tokens: 3000
+    maxTokens: 1500
   });
 
   return {
-    traduccion: respuesta.choices[0]?.message?.content?.trim(),
+    traduccion: contenido,
     idiomaOrigen,
     idiomaDestino,
-    modeloUtilizado: MODELO_GROQ_POR_DEFECTO,
-    tokensUsados: respuesta.usage
+    modeloUtilizado,
+    tokensUsados
   };
 }

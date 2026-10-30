@@ -5,6 +5,41 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import puppeteer from 'puppeteer';
+import { exec } from 'child_process';
+import util from 'util';
+
+const execPromesa = util.promisify(exec);
+
+let binarioLibreOfficeCache = undefined;
+
+/**
+ * Detecta qué binario de LibreOffice/soffice está disponible en el sistema operativo
+ */
+export async function obtenerBinarioLibreOffice() {
+  if (binarioLibreOfficeCache !== undefined) {
+    return binarioLibreOfficeCache;
+  }
+
+  const candidatos = process.platform === 'win32'
+    ? [
+        'soffice',
+        'libreoffice',
+        'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+        'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe'
+      ]
+    : ['libreoffice', 'soffice', '/usr/bin/libreoffice', '/usr/bin/soffice'];
+
+  for (const bin of candidatos) {
+    try {
+      await execPromesa(`"${bin}" --version`);
+      binarioLibreOfficeCache = bin;
+      return bin;
+    } catch (_) {}
+  }
+
+  binarioLibreOfficeCache = null;
+  return null;
+}
 
 function escaparHtml(str) {
   if (!str) return '';
@@ -101,7 +136,46 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
 }
 
 /**
- * Convierte documentos Word (.docx, .doc) a PDF de forma 100% nativa
+ * Generador de PDF de respaldo 100% puro con pdf-lib (cero dependencias de navegador)
+ */
+async function generarPdfDesdeTextoPlano({ texto, rutaDestino, nombreArchivo }) {
+  const pdfDoc = await PDFDocument.create();
+  const fontHelvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const lineasTotales = (texto || '').split(/\r?\n/).filter(l => l.trim() !== '');
+  const lineasPorPagina = 45;
+
+  if (lineasTotales.length === 0) {
+    lineasTotales.push('Documento procesado sin texto visible.');
+  }
+
+  for (let i = 0; i < lineasTotales.length; i += lineasPorPagina) {
+    const pagina = pdfDoc.addPage([595.28, 841.89]);
+    const { height } = pagina.getSize();
+    const lineas = lineasTotales.slice(i, i + lineasPorPagina);
+
+    lineas.forEach((linea, index) => {
+      // Limpiar caracteres no imprimibles que puedan causar conflicto en pdf-lib
+      const limpia = linea.replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ').substring(0, 85);
+      pagina.drawText(limpia, {
+        x: 45,
+        y: height - 50 - (index * 16),
+        size: 10,
+        font: fontHelvetica,
+        color: rgb(0.12, 0.16, 0.22),
+      });
+    });
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  await fs.promises.writeFile(rutaDestino, pdfBytes);
+  return {
+    rutaArchivo: rutaDestino,
+    nombreArchivo
+  };
+}
+
+/**
+ * Convierte documentos Word (.docx, .doc) a PDF de forma nativa y tolerante a fallos
  */
 export async function convertirWordAPdf(rutaDocx) {
   const extension = path.extname(rutaDocx).toLowerCase();
@@ -109,11 +183,36 @@ export async function convertirWordAPdf(rutaDocx) {
   const nombreBase = path.basename(rutaDocx, extension);
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
 
+  // 1. Motor Primario: LibreOffice Headless (estándar de producción instalado en el contenedor Render)
+  const binarioLo = await obtenerBinarioLibreOffice();
+  if (binarioLo) {
+    try {
+      const comandoLo = `"${binarioLo}" --headless --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
+      await execPromesa(comandoLo, { timeout: 60000 });
+      const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+        if (archivoGenerado !== rutaFinalPdf) {
+          fs.renameSync(archivoGenerado, rutaFinalPdf);
+        }
+        return {
+          rutaArchivo: rutaFinalPdf,
+          nombreArchivo: `${nombreBase}_converted.pdf`
+        };
+      }
+    } catch (errLo) {
+      console.warn('[Word] LibreOffice no completó la conversión, pasando a motor alternativo:', errLo.message);
+    }
+  }
+
+  // 2. Motor Secundario: Mammoth + Puppeteer HTML a PDF
   let htmlCuerpo = '';
+  let textoExtraido = '';
 
   try {
     const resultadoMammoth = await mammoth.convertToHtml({ path: rutaDocx });
     htmlCuerpo = resultadoMammoth.value;
+    const raw = await mammoth.extractRawText({ path: rutaDocx }).catch(() => null);
+    if (raw?.value) textoExtraido = raw.value;
   } catch (errMammoth) {
     console.warn(`[Word] Mammoth no pudo parsear como .docx directo (${errMammoth.message}), intentando extracción alternativa...`);
   }
@@ -123,6 +222,7 @@ export async function convertirWordAPdf(rutaDocx) {
     try {
       const textoPuro = await mammoth.extractRawText({ path: rutaDocx });
       if (textoPuro && textoPuro.value && textoPuro.value.trim()) {
+        textoExtraido = textoPuro.value;
         htmlCuerpo = textoPuro.value.split(/\r?\n/).filter(l => l.trim()).map(p => `<p>${escaparHtml(p)}</p>`).join('');
       }
     } catch (_) {}
@@ -136,6 +236,7 @@ export async function convertirWordAPdf(rutaDocx) {
       const coincidencias = contenidoStr.match(/[\x20-\x7E\xC0-\xFF]{4,}/g) || [];
       const textoLimpio = coincidencias.filter(s => !s.startsWith('Microsoft') && !s.includes('Root Entry')).join(' ');
       if (textoLimpio.trim()) {
+        textoExtraido = textoLimpio;
         htmlCuerpo = `<p>${escaparHtml(textoLimpio)}</p>`;
       }
     } catch (_) {}
@@ -206,19 +307,48 @@ export async function convertirWordAPdf(rutaDocx) {
       rutaArchivo: rutaFinalPdf,
       nombreArchivo: `${nombreBase}_converted.pdf`
     };
+  } catch (errPuppeteer) {
+    console.warn('[Word] Puppeteer no disponible o falló:', errPuppeteer.message);
+    // 3. Motor Terciario de Respaldo: Generación directa con pdf-lib (100% infalible)
+    return await generarPdfDesdeTextoPlano({
+      texto: textoExtraido || htmlCuerpo.replace(/<[^>]+>/g, '\n'),
+      rutaDestino: rutaFinalPdf,
+      nombreArchivo: `${nombreBase}_converted.pdf`
+    });
   } finally {
     if (browser) await browser.close();
   }
 }
 
 /**
- * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF de forma 100% nativa
+ * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF de forma nativa y tolerante a fallos
  */
 export async function convertirPowerPointAPdf(rutaPptx) {
   const extension = path.extname(rutaPptx).toLowerCase();
   const dirSalida = path.dirname(rutaPptx);
   const nombreBase = path.basename(rutaPptx, extension);
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
+
+  // 1. Motor Primario: LibreOffice Headless (estándar de producción instalado en el contenedor Render)
+  const binarioLo = await obtenerBinarioLibreOffice();
+  if (binarioLo) {
+    try {
+      const comandoLo = `"${binarioLo}" --headless --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
+      await execPromesa(comandoLo, { timeout: 60000 });
+      const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+        if (archivoGenerado !== rutaFinalPdf) {
+          fs.renameSync(archivoGenerado, rutaFinalPdf);
+        }
+        return {
+          rutaArchivo: rutaFinalPdf,
+          nombreArchivo: `${nombreBase}_converted.pdf`
+        };
+      }
+    } catch (errLo) {
+      console.warn('[PowerPoint] LibreOffice falló, recurriendo a motor secundario:', errLo.message);
+    }
+  }
 
   let diapositivasHtml = [];
 
@@ -421,6 +551,14 @@ export async function convertirPowerPointAPdf(rutaPptx) {
       rutaArchivo: rutaFinalPdf,
       nombreArchivo: `${nombreBase}_converted.pdf`
     };
+  } catch (errPuppeteer) {
+    console.warn('[PowerPoint] Puppeteer no disponible o falló:', errPuppeteer.message);
+    const textoDiapositivas = diapositivasHtml.map((d, i) => `--- Diapositiva ${i + 1} ---\n${d.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}`).join('\n\n');
+    return await generarPdfDesdeTextoPlano({
+      texto: textoDiapositivas,
+      rutaDestino: rutaFinalPdf,
+      nombreArchivo: `${nombreBase}_converted.pdf`
+    });
   } finally {
     if (browser) await browser.close();
   }
