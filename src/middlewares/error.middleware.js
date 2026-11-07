@@ -1,14 +1,27 @@
 import multer from 'multer';
 import { AppError } from '../utils/appError.js';
 import { CONFIGURACION } from '../config/constantes.js';
+import { registrarErrorMonitor } from '../controllers/admin.controller.js';
 
 /**
- * Middleware centralizado de manejo global de errores.
+ * Middleware centralizado de manejo global de errores y telemetría de fallos.
  */
 export function manejarErroresGlobales(err, req, res, next) {
   let codigoEstado = err.codigoEstado || err.status || 500;
   let mensaje = err.message || 'Ocurrió un error inesperado en el servidor.';
   let detalles = err.detalles || null;
+
+  // Registrar en el monitor de telemetría de errores y caídas
+  try {
+    registrarErrorMonitor({
+      ruta: req.originalUrl || req.url,
+      metodo: req.method,
+      status: codigoEstado,
+      mensaje: mensaje,
+      stack: err.stack,
+      usuarioId: req.usuario?.id
+    });
+  } catch (_) {}
 
   // Manejo de errores específicos de Multer (subida de archivos)
   if (err instanceof multer.MulterError) {
