@@ -34,10 +34,16 @@ export function manejarErroresGlobales(err, req, res, next) {
     mensaje = 'El cuerpo de la petición contiene un formato JSON inválido.';
   }
 
-  // En producción, ofuscar mensajes de errores inesperados (500)
+  // En producción, solo ofuscar errores no operacionales (bugs o fallos graves de infraestructura)
   const esProduccion = process.env.NODE_ENV === 'production' || CONFIGURACION.ENTORNO === 'produccion';
-  if (codigoEstado === 500 && esProduccion) {
-    mensaje = 'Ocurrió un error interno al procesar su solicitud. Intente nuevamente más tarde.';
+  const esErrorOperacional = err instanceof AppError || err.isOperational || (codigoEstado >= 400 && codigoEstado < 500);
+
+  if (codigoEstado === 500 && esProduccion && !esErrorOperacional) {
+    // Si el error contiene detalles sobre certificados, contraseñas o datos de usuario, permitir mensaje descriptivo
+    const esErrorDescriptivo = /contrase|certificad|p12|pfx|formato|firma|archivo|p[aá]gina|bytes|descarga/i.test(mensaje);
+    if (!esErrorDescriptivo) {
+      mensaje = 'Ocurrió un error interno al procesar su solicitud. Intente nuevamente más tarde.';
+    }
   }
 
   // Log detallado en servidor para depuración

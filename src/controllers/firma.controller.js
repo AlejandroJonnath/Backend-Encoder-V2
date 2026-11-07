@@ -45,8 +45,20 @@ export async function firmarPdfController(req, res, next) {
   try {
     const archivoPdf = req.file || req.files?.pdf?.[0];
     
-    // La contraseña debe enviarse EXCLUSIVAMENTE en el body de la petición (nunca en headers HTTP)
-    const contrasena = req.body?.contrasena;
+    // Extraer parámetros con fallback resiliente (body multipart, x-parametros o query)
+    let paramsHeader = {};
+    if (req.headers['x-parametros']) {
+      try {
+        paramsHeader = typeof req.headers['x-parametros'] === 'string'
+          ? JSON.parse(req.headers['x-parametros'])
+          : req.headers['x-parametros'];
+      } catch (_) {}
+    }
+
+    const contrasena = req.body?.contrasena || paramsHeader?.contrasena || req.query?.contrasena;
+    const tokenP12 = req.body?.tokenP12 || req.headers['x-token-p12'] || paramsHeader?.tokenP12 || req.query?.tokenP12;
+    const rawPos = req.body?.posicion || paramsHeader?.posicion || req.query?.posicion;
+    const razon = req.body?.razon || paramsHeader?.razon || req.query?.razon || 'Firma Electrónica Documental';
 
     if (!archivoPdf) {
       throw new AppError('Debes proporcionar el archivo PDF a firmar.', 400);
@@ -55,27 +67,24 @@ export async function firmarPdfController(req, res, next) {
 
     // Posición y metadatos de la firma
     let posicionRaw = { x: 50, y: 50, pagina: 1 };
-    const rawPos = req.body?.posicion;
     if (rawPos) {
       posicionRaw = typeof rawPos === 'string' ? JSON.parse(rawPos) : rawPos;
     }
-    const razon = req.body?.razon || 'Firma Electrónica Documental';
 
     // Determinar la procedencia del certificado .p12
     let rutaP12 = null;
 
     if (req.files?.p12?.[0] && req.files.p12[0].path !== archivoPdf.path) {
       rutaP12 = req.files.p12[0].path;
-    } else if (req.body?.tokenP12 || req.headers['x-token-p12']) {
-      const token = req.body?.tokenP12 || req.headers['x-token-p12'];
-      const posible = path.join(CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL, path.basename(token));
+    } else if (tokenP12) {
+      const posible = path.join(CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL, path.basename(tokenP12));
       if (fs.existsSync(posible)) {
         rutaP12 = posible;
       } else {
         throw new AppError('El certificado .p12 expiró o ya fue utilizado por seguridad. Por favor cárgalo de nuevo.', 400);
       }
-    } else if (req.body?.p12Base64 || req.headers['x-p12-base64']) {
-      const b64 = req.body?.p12Base64 || req.headers['x-p12-base64'];
+    } else if (req.body?.p12Base64 || req.headers['x-p12-base64'] || paramsHeader?.p12Base64) {
+      const b64 = req.body?.p12Base64 || req.headers['x-p12-base64'] || paramsHeader?.p12Base64;
       const rutaP12Temp = path.join(CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL, `${Date.now()}_cert.p12`);
       fs.writeFileSync(rutaP12Temp, Buffer.from(b64, 'base64'));
       rutaP12 = rutaP12Temp;
@@ -92,14 +101,22 @@ export async function firmarPdfController(req, res, next) {
       throw new AppError('Se requiere la contraseña del certificado .p12.', 400);
     }
 
-    // Ejecutar la firma digital criptográfica
-    const resultado = await firmarDocumentoPdf({
-      rutaPdf: archivoPdf.path,
-      rutaP12,
-      contrasenaP12: contrasena,
-      posicion: posicionRaw,
-      razon
-    });
+    // Ejecutar la firma digital criptográfica con captura controlada de errores
+    let resultado;
+    try {
+      resultado = await firmarDocumentoPdf({
+        rutaPdf: archivoPdf.path,
+        rutaP12,
+        contrasenaP12: contrasena,
+        posicion: posicionRaw,
+        razon
+      });
+    } catch (errFirma) {
+      if (errFirma instanceof AppError) {
+        throw errFirma;
+      }
+      throw new AppError(errFirma.message || 'Error al procesar la firma digital con el certificado proporcionado.', 400);
+    }
 
     const stats = fs.statSync(resultado.rutaArchivo);
 

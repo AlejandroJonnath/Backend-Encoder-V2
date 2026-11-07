@@ -205,7 +205,9 @@ export async function agregarNotaPdfController(req, res, next) {
     const archivo = req.file;
     const textoNota = req.body?.nota;
     const posicionRaw = req.body?.posicion ? JSON.parse(req.body.posicion) : { x: 100, y: 100, pagina: 1 };
-    const autor = req.usuario?.user_metadata?.first_name || 'Usuario';
+    const autor = (req.body?.autor && typeof req.body.autor === 'string' && req.body.autor.trim())
+      ? req.body.autor.trim()
+      : (req.usuario?.user_metadata?.first_name || req.usuario?.user_metadata?.full_name || 'Usuario');
 
     if (!archivo || !textoNota) {
       throw new AppError('Debes proporcionar el archivo PDF y el texto de la nota.', 400);

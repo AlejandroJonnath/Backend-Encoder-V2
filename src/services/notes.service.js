@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { CONFIGURACION } from '../config/constantes.js';
+import { generarNombreArchivoSeguro } from '../utils/fileSecurity.js';
 
 /**
  * Servicio para agregar notas visuales e interactivas en un PDF
@@ -24,11 +26,17 @@ export async function agregarNotaAlPdf({
   const fontHelvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontHelveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const anchoNota = 160;
-  const altoNota = 60;
+  const anchoNota = 170;
+  const altoNota = 65;
   const posX = posicion.x;
   const posY = posicion.y;
-  const fechaStr = new Date().toLocaleDateString('es-ES');
+  
+  // Fecha actual formateada en español
+  const fechaStr = new Date().toLocaleDateString('es-EC', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  });
 
   // 1. Dibujar sombra suave de la nota
   pagina.drawRectangle({
@@ -55,6 +63,7 @@ export async function agregarNotaAlPdf({
   const limpiarWinAnsi = (str) => {
     if (!str) return '';
     return String(str)
+      .normalize('NFC')
       .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu, '')
       .replace(/[^\x00-\xFF]/g, '')
       .trim();
@@ -63,30 +72,41 @@ export async function agregarNotaAlPdf({
   const autorLimpio = limpiarWinAnsi(autor) || 'Usuario';
   const textoLimpio = limpiarWinAnsi(textoNota) || 'Nota';
 
-  // 3. Encabezado con autor y fecha (sin emojis que provoquen error WinAnsi)
-  pagina.drawText(`Nota: ${autorLimpio}`, {
+  // 3. Encabezado con persona que lo hizo y fecha actual
+  // Autor (izquierda)
+  const textoEncabezadoAutor = autorLimpio.length > 18 ? `${autorLimpio.substring(0, 16)}...` : autorLimpio;
+  pagina.drawText(`Por: ${textoEncabezadoAutor}`, {
     x: posX + 6,
-    y: posY + altoNota - 12,
+    y: posY + altoNota - 13,
     size: 7.5,
     font: fontHelveticaBold,
-    color: rgb(0.4, 0.3, 0.1),
+    color: rgb(0.35, 0.25, 0.05),
   });
 
+  // Fecha actual (derecha)
   pagina.drawText(fechaStr, {
-    x: posX + anchoNota - 50,
-    y: posY + altoNota - 12,
+    x: posX + anchoNota - 55,
+    y: posY + altoNota - 13,
     size: 6.5,
     font: fontHelvetica,
     color: rgb(0.5, 0.4, 0.2),
   });
 
-  // 4. Contenido del texto de la nota (cortado o ajustado en líneas)
+  // Línea divisoria muy sutil bajo el encabezado
+  pagina.drawLine({
+    start: { x: posX + 6, y: posY + altoNota - 17 },
+    end: { x: posX + anchoNota - 6, y: posY + altoNota - 17 },
+    color: rgb(0.90, 0.80, 0.35),
+    thickness: 0.5,
+  });
+
+  // 4. Mensaje / contenido del texto de la nota (cortado o ajustado en líneas)
   const lineas = [];
   const palabras = textoLimpio.split(' ');
   let lineaActual = '';
 
   for (const palabra of palabras) {
-    if ((lineaActual + palabra).length > 28) {
+    if ((lineaActual + palabra).length > 30) {
       lineas.push(lineaActual);
       lineaActual = palabra + ' ';
     } else {
@@ -98,7 +118,7 @@ export async function agregarNotaAlPdf({
   lineas.slice(0, 3).forEach((linea, index) => {
     pagina.drawText(linea.trim(), {
       x: posX + 6,
-      y: posY + altoNota - 26 - (index * 11),
+      y: posY + altoNota - 30 - (index * 11),
       size: 7.5,
       font: fontHelvetica,
       color: rgb(0.15, 0.15, 0.15),
@@ -106,9 +126,10 @@ export async function agregarNotaAlPdf({
   });
 
   const bytesFinales = await pdfDoc.save({ useObjectStreams: true });
-  const dirSalida = path.dirname(rutaPdf);
+  const dirSalida = CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL;
   const nombreBase = path.basename(rutaPdf, path.extname(rutaPdf)).replace(/_addnote$/, '');
-  const rutaFinalNota = path.join(dirSalida, `${nombreBase}_addnote.pdf`);
+  const nombreFisicoFinal = generarNombreArchivoSeguro(`${nombreBase}_addnote.pdf`);
+  const rutaFinalNota = path.join(dirSalida, nombreFisicoFinal);
 
   fs.writeFileSync(rutaFinalNota, bytesFinales);
 

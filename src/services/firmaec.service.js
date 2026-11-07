@@ -6,6 +6,38 @@ import { P12Signer } from '@signpdf/signer-p12';
 import { pdflibAddPlaceholder } from '@signpdf/placeholder-pdf-lib';
 import { SignPdf } from '@signpdf/signpdf';
 import QRCode from 'qrcode';
+import { AppError } from '../utils/appError.js';
+import { CONFIGURACION } from '../config/constantes.js';
+import { generarNombreArchivoSeguro } from '../utils/fileSecurity.js';
+
+/**
+ * Decodifica cadenas de texto que node-forge pueda haber capturado en bytes UTF-8
+ */
+function decodificarTextoForge(str) {
+  if (!str) return '';
+  try {
+    return forge.util.decodeUtf8(str);
+  } catch (_) {
+    return str;
+  }
+}
+
+/**
+ * Sanitiza cualquier texto para que no cause errores de codificación en fuentes WinAnsi de pdf-lib
+ */
+function limpiarParaPdf(str, fallback = '') {
+  if (!str) return fallback;
+  return String(str)
+    .normalize('NFC')
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/[^\x00-\xFF]/g, (char) => {
+      const mapa = {
+        '—': '-', '–': '-', '’': "'", '‘': "'", '”': '"', '“': '"', '•': '*'
+      };
+      return mapa[char] || '';
+    })
+    .trim() || fallback;
+}
 
 /**
  * Servicio de firma electrónica PAdES con certificado .p12
@@ -28,7 +60,7 @@ export async function firmarDocumentoPdf({
   // ─────────────────────────────────────────────────────────────
   const p12Buffer = await fs.promises.readFile(rutaP12);
   if (!p12Buffer || p12Buffer.length < 50) {
-    throw new Error('El archivo del certificado .p12 está incompleto o no se pudo leer correctamente.');
+    throw new AppError('El archivo del certificado .p12 está incompleto o no se pudo leer correctamente.', 400);
   }
 
   // Extraer datos del titular antes de la firma para la estampa visual
@@ -37,14 +69,15 @@ export async function firmarDocumentoPdf({
   try {
     p12Asn1 = forge.asn1.fromDer(p12Der);
   } catch (errAsn) {
-    throw new Error(`El archivo de certificado .p12 no tiene una estructura ASN.1 válida (${errAsn.message}). Verifica que el archivo no esté corrupto.`);
+    throw new AppError(`El archivo de certificado .p12 no tiene una estructura ASN.1 válida (${errAsn.message}). Verifica que el archivo no esté corrupto.`, 400);
   }
 
   let p12Parsed;
   try {
-    p12Parsed = forge.pkcs12.pkcs12FromAsn1(p12Asn1, contrasenaP12);
+    // strict = false es crítico para admitir certificados de Banco Central, Security Data, ANFAC, etc.
+    p12Parsed = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, contrasenaP12);
   } catch (err) {
-    throw new Error('La contraseña del certificado .p12 es incorrecta o el archivo está dañado.');
+    throw new AppError('La contraseña del certificado .p12 es incorrecta o el archivo está dañado.', 400);
   }
 
   // Extraer nombre del titular (CN)
@@ -52,22 +85,26 @@ export async function firmarDocumentoPdf({
   let cedulaTitular = '';
   let entidadEmisora = 'Entidad Certificadora';
 
-  for (const safeContent of p12Parsed.safeContents) {
-    for (const safeBag of safeContent.safeBags) {
+  for (const safeContent of p12Parsed.safeContents || []) {
+    for (const safeBag of safeContent.safeBags || []) {
       if (safeBag.cert) {
-        const attrs = safeBag.cert.subject.attributes;
+        const attrs = safeBag.cert.subject.attributes || [];
         const cn = attrs.find(a => a.name === 'commonName' || a.shortName === 'CN')?.value || '';
         const serialNum = attrs.find(a => a.shortName === 'serialNumber' || a.name === 'serialNumber')?.value || '';
-        const issuerCN = safeBag.cert.issuer.attributes.find(a => a.shortName === 'CN' || a.name === 'commonName')?.value || '';
+        const issuerCN = safeBag.cert.issuer?.attributes?.find(a => a.shortName === 'CN' || a.name === 'commonName')?.value || '';
         
-        if (cn) nombreTitular = cn;
-        if (serialNum) cedulaTitular = serialNum;
-        if (issuerCN) entidadEmisora = issuerCN;
+        if (cn) nombreTitular = decodificarTextoForge(cn);
+        if (serialNum) cedulaTitular = decodificarTextoForge(serialNum);
+        if (issuerCN) entidadEmisora = decodificarTextoForge(issuerCN);
         break;
       }
     }
     if (nombreTitular !== 'Titular de Firma') break;
   }
+
+  nombreTitular = limpiarParaPdf(nombreTitular, 'Titular de Firma');
+  cedulaTitular = limpiarParaPdf(cedulaTitular, '');
+  const razonLimpia = limpiarParaPdf(razon, 'Firma Electrónica Documental');
 
   const fechaFirma = new Date();
   const fechaStr = fechaFirma.toLocaleString('es-EC', {
@@ -243,7 +280,7 @@ export async function firmarDocumentoPdf({
   // ─────────────────────────────────────────────────────────────
   await pdflibAddPlaceholder({
     pdfDoc,
-    reason: razon,
+    reason: razonLimpia,
     contactInfo: nombreTitular,
     name: nombreTitular,
     location: 'Ecuador',
@@ -256,22 +293,27 @@ export async function firmarDocumentoPdf({
   // ─────────────────────────────────────────────────────────────
   // 4. Firmar criptográficamente el PDF con la clave del .p12
   // ─────────────────────────────────────────────────────────────
-  const signer = new P12Signer(p12Buffer, { passphrase: contrasenaP12 });
+  const signer = new P12Signer(p12Buffer, {
+    passphrase: contrasenaP12,
+    asn1StrictParsing: false
+  });
   const signPdfInstance = new SignPdf();
 
   let pdfFirmadoBuffer;
   try {
     pdfFirmadoBuffer = await signPdfInstance.sign(Buffer.from(pdfConPlaceholderBytes), signer);
   } catch (errSign) {
-    throw new Error(`Error al incrustar la firma criptográfica: ${errSign.message}`);
+    console.error('[FirmaEC] Error en signpdf:', errSign.message);
+    throw new AppError(`Error al incrustar la firma criptográfica: ${errSign.message}`, 400);
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 5. Guardar el PDF firmado en disco
+  // 5. Guardar el PDF firmado en disco (en RUTA_TEMPORAL principal)
   // ─────────────────────────────────────────────────────────────
-  const dirSalida = path.dirname(rutaPdf);
+  const dirSalida = CONFIGURACION.ARCHIVOS.RUTA_TEMPORAL;
   const nombreBase = path.basename(rutaPdf, path.extname(rutaPdf)).replace(/_signed$/, '');
-  const rutaFinalFirmado = path.join(dirSalida, `${nombreBase}_signed.pdf`);
+  const nombreFisicoFinal = generarNombreArchivoSeguro(`${nombreBase}_signed.pdf`);
+  const rutaFinalFirmado = path.join(dirSalida, nombreFisicoFinal);
 
   await fs.promises.writeFile(rutaFinalFirmado, pdfFirmadoBuffer);
 

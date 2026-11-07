@@ -7,6 +7,7 @@ import path from 'path';
 import { CONFIGURACION } from './config/constantes.js';
 import { validarVariablesEntorno } from './config/env.validator.js';
 import { iniciarLimpiadorPeriodico, detenerLimpiadorPeriodico } from './services/cleanup.service.js';
+import { iniciarServicioKeepAlive, detenerServicioKeepAlive } from './services/keepalive.service.js';
 import { obtenerBinarioGhostscript } from './services/compress.service.js';
 import { manejarErroresGlobales } from './middlewares/error.middleware.js';
 import rutasApi from './routes/api.routes.js';
@@ -119,6 +120,7 @@ const esModuloPrincipal = process.argv[1] && fileURLToPath(import.meta.url) === 
 
 if (esModuloPrincipal) {
   iniciarLimpiadorPeriodico();
+  iniciarServicioKeepAlive();
 
   const servidor = app.listen(CONFIGURACION.PUERTO, () => {
     console.log(`\nSERVIDOR INICIADO EN PUERTO: ${CONFIGURACION.PUERTO}`);
@@ -131,6 +133,7 @@ if (esModuloPrincipal) {
   function cerrarServidor(senal) {
     console.log(`\n[Server] Señal ${senal} recibida. Cerrando servidor de forma limpia...`);
     detenerLimpiadorPeriodico();
+    detenerServicioKeepAlive();
     servidor.close(() => {
       console.log('[Server] Servidor cerrado y procesos en segundo plano detenidos.');
       process.exit(0);
