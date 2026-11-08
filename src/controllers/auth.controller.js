@@ -111,25 +111,7 @@ export async function solicitarRecuperacionController(req, res, next) {
 
     const emailNormalizado = email.trim().toLowerCase();
 
-    // Verificar que el usuario existe consultando public.profiles
-    const { data: perfil, error: errorBusqueda } = await supabaseAdmin
-      .from('profiles')
-      .select('id, email')
-      .ilike('email', emailNormalizado)
-      .maybeSingle();
-
-    if (errorBusqueda) {
-      console.warn('[Recuperación] Advertencia consultando profiles:', errorBusqueda.message);
-    }
-
-    // Por seguridad, no revelamos si el correo existe o no
-    if (!perfil) {
-      return responderExito(res, {
-        mensaje: 'Si el correo está registrado, recibirás las instrucciones en breve.'
-      });
-    }
-
-    // Generar OTP de 6 dígitos
+    // Generar OTP numérico de 6 dígitos
     const otpCodigo = String(Math.floor(100000 + Math.random() * 900000));
     const otpHash = crypto.createHash('sha256').update(otpCodigo).digest('hex');
     const expiresAt = new Date(
@@ -143,7 +125,7 @@ export async function solicitarRecuperacionController(req, res, next) {
       .eq('email', emailNormalizado)
       .eq('usado', false);
 
-    // Guardar nuevo OTP hasheado
+    // Guardar nuevo OTP hasheado en public.password_resets
     const { error: errorInsert } = await supabaseAdmin.from('password_resets').insert({
       email: emailNormalizado,
       otp_hash: otpHash,
@@ -151,17 +133,17 @@ export async function solicitarRecuperacionController(req, res, next) {
     });
 
     if (errorInsert) {
-      console.error('[Recuperación] Error guardando OTP:', errorInsert.message);
+      console.error('[Recuperación] Error guardando OTP en base de datos:', errorInsert.message);
       throw new AppError('Error generando código de recuperación.', 500);
     }
 
     // Enviar correo vía EmailJS
     await enviarCorreoRecuperacion(emailNormalizado, otpCodigo);
 
-    console.log(`[Recuperación] OTP enviado a ${emailNormalizado}`);
+    console.log(`[Recuperación] OTP enviado exitosamente a ${emailNormalizado}`);
 
     return responderExito(res, {
-      mensaje: 'Si el correo está registrado, recibirás las instrucciones en breve.'
+      mensaje: 'Si el correo está registrado, recibirás el código de recuperación en breve.'
     });
   } catch (err) {
     next(err);
