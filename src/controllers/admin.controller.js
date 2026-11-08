@@ -173,15 +173,20 @@ export async function listarReportesAdminController(req, res, next) {
 export async function actualizarReporteAdminController(req, res, next) {
   try {
     const { id } = req.params;
-    const { status, adminResponse } = req.body || {};
+    const { status, estado, adminResponse } = req.body || {};
+
+    let estadoFinal = estado || status || 'Pendiente';
+    if (estadoFinal === 'abierto') estadoFinal = 'Pendiente';
+    if (estadoFinal === 'en_revision') estadoFinal = 'En proceso';
+    if (estadoFinal === 'resuelto') estadoFinal = 'Solucionado';
 
     const actualizacion = {
-      status: status || 'en_revision',
+      status: estadoFinal,
       admin_response: adminResponse || null,
       updated_at: new Date().toISOString()
     };
 
-    if (status === 'resuelto') {
+    if (estadoFinal === 'Solucionado' || estadoFinal === 'resuelto') {
       actualizacion.resolved_at = new Date().toISOString();
     }
 
@@ -196,7 +201,7 @@ export async function actualizarReporteAdminController(req, res, next) {
     }
 
     return responderExito(res, {
-      mensaje: `Reporte ${id} actualizado correctamente a estado "${actualizacion.status}".`,
+      mensaje: `Reporte clasificado correctamente como "${estadoFinal}".`,
       ticketActualizado: actualizacion
     });
   } catch (err) {
