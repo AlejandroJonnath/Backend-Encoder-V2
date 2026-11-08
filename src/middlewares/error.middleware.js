@@ -52,8 +52,8 @@ export function manejarErroresGlobales(err, req, res, next) {
   const esErrorOperacional = err instanceof AppError || err.isOperational || (codigoEstado >= 400 && codigoEstado < 500);
 
   if (codigoEstado === 500 && esProduccion && !esErrorOperacional) {
-    // Si el error contiene detalles sobre certificados, contraseñas o datos de usuario, permitir mensaje descriptivo
-    const esErrorDescriptivo = /contrase|certificad|p12|pfx|formato|firma|archivo|p[aá]gina|bytes|descarga/i.test(mensaje);
+    // Si el error contiene detalles sobre certificados, contraseñas, correos o datos de usuario, permitir mensaje descriptivo
+    const esErrorDescriptivo = /contrase|certificad|p12|pfx|formato|firma|archivo|p[aá]gina|bytes|descarga|correo|email|recuperac|otp/i.test(mensaje);
     if (!esErrorDescriptivo) {
       mensaje = 'Ocurrió un error interno al procesar su solicitud. Intente nuevamente más tarde.';
     }

@@ -137,10 +137,14 @@ export async function solicitarRecuperacionController(req, res, next) {
       throw new AppError('Error generando código de recuperación.', 500);
     }
 
-    // Enviar correo vía EmailJS
-    await enviarCorreoRecuperacion(emailNormalizado, otpCodigo);
-
-    console.log(`[Recuperación] OTP enviado exitosamente a ${emailNormalizado}`);
+    // Enviar correo vía EmailJS de forma segura
+    try {
+      await enviarCorreoRecuperacion(emailNormalizado, otpCodigo);
+      console.log(`[Recuperación] OTP enviado exitosamente a ${emailNormalizado}`);
+    } catch (emailErr) {
+      console.error('[Recuperación] Error en EmailJS:', emailErr.message);
+      throw new AppError(`Error enviando correo: ${emailErr.message}`, 400);
+    }
 
     return responderExito(res, {
       mensaje: 'Si el correo está registrado, recibirás el código de recuperación en breve.'
