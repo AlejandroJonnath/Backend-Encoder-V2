@@ -56,3 +56,57 @@ export async function verificarAutenticacion(req, res, next) {
     });
   }
 }
+
+/**
+ * Middleware de autorización para rutas exclusivas de administrador.
+ * Debe ejecutarse DESPUÉS de verificarAutenticacion.
+ * Verifica que el usuario tenga role='admin' en la tabla public.profiles.
+ */
+export async function verificarRolAdmin(req, res, next) {
+  try {
+    const usuarioId = req.usuario?.id;
+    if (!usuarioId) {
+      return res.status(401).json({
+        exito: false,
+        codigoEstado: 401,
+        mensaje: 'Usuario no autenticado.'
+      });
+    }
+
+    // Consultar el perfil del usuario para verificar rol
+    const { data: perfil, error } = await supabaseAdmin
+      .from('profiles')
+      .select('role, is_admin')
+      .eq('id', usuarioId)
+      .single();
+
+    if (error) {
+      console.error('[Admin Guard] Error consultando perfil:', error.message);
+      return res.status(500).json({
+        exito: false,
+        codigoEstado: 500,
+        mensaje: 'Error verificando permisos de administrador.'
+      });
+    }
+
+    const esAdmin = perfil?.role === 'admin' || perfil?.is_admin === true;
+
+    if (!esAdmin) {
+      return res.status(403).json({
+        exito: false,
+        codigoEstado: 403,
+        mensaje: 'Acceso denegado: Se requieren permisos de administrador para esta operación.'
+      });
+    }
+
+    next();
+  } catch (err) {
+    console.error('[Admin Guard] Error en verificación de rol admin:', err.message);
+    res.status(500).json({
+      exito: false,
+      codigoEstado: 500,
+      mensaje: 'Error interno verificando permisos de administrador.'
+    });
+  }
+}
+

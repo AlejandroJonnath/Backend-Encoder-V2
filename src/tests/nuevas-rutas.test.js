@@ -16,6 +16,32 @@ describe('4. Pruebas de Nuevos Endpoints: Soporte, Usuario, Rollback y Admin', (
 
     const resAdmin = await request(app).get('/api/admin/estadisticas');
     assert.equal(resAdmin.status, 401);
+
+    const resAdminReportes = await request(app).get('/api/admin/reportes');
+    assert.equal(resAdminReportes.status, 401);
+
+    const resAdminMonitoreo = await request(app).get('/api/admin/monitoreo');
+    assert.equal(resAdminMonitoreo.status, 401);
+  });
+
+  it('Rutas de recuperación de contraseña con OTP deben validar campos requeridos', async () => {
+    // Solicitar sin correo
+    const resSolicitudSinCorreo = await request(app)
+      .post('/api/auth/solicitar-recuperacion')
+      .send({});
+    assert.equal(resSolicitudSinCorreo.status, 400);
+
+    // Restablecer sin OTP o sin nueva contraseña
+    const resRestablecerIncompleto = await request(app)
+      .post('/api/auth/restablecer-contrasena')
+      .send({ email: 'usuario@prueba.com', otp: '123456' });
+    assert.equal(resRestablecerIncompleto.status, 400);
+
+    // Restablecer con contraseña muy corta (< 6 caracteres)
+    const resPasswordCorta = await request(app)
+      .post('/api/auth/restablecer-contrasena')
+      .send({ email: 'usuario@prueba.com', otp: '123456', nuevaContrasena: '123' });
+    assert.equal(resPasswordCorta.status, 400);
   });
 
   it('Ruta /salud debe seguir respondiendo 200 y reportar estado activo', async () => {

@@ -12,16 +12,14 @@ import adminRoutes from './admin.routes.js';
 
 const router = Router();
 
-// 1. RUTA PÚBLICA DE DESCARGA DIRECTA (Archivos generados)
+// 1. RUTAS PÚBLICAS (Descarga de archivos y recuperación de contraseñas)
 router.get('/descargar/:nombreArchivo', descargarArchivoController);
+router.use('/auth', authRoutes);
 
 // 2. MIDDLEWARE DE AUTENTICACIÓN PARA OPERACIONES PROTEGIDAS
 router.use(verificarAutenticacion);
 
-// 3. MÓDULOS DE RUTAS MODULARES
-// Gestión de Auth y Rollback
-router.use('/auth', authRoutes);
-
+// 3. MÓDULOS DE RUTAS PROTEGIDAS
 // Sistema de Soporte e Incidencias (Modo Reporte)
 router.use('/support', supportRoutes);
 

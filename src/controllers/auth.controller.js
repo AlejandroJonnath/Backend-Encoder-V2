@@ -1,6 +1,9 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { AppError } from '../utils/appError.js';
 import { responderExito } from '../utils/response.js';
+import { CONFIGURACION } from '../config/constantes.js';
+import { enviarCorreoRecuperacion } from '../services/email.service.js';
+import crypto from 'crypto';
 
 /**
  * Revierte el registro de un usuario que rechazó las políticas de privacidad y términos.
@@ -84,6 +87,158 @@ export async function registrarConsentimientoController(req, res, next) {
       policyVersion,
       termsVersion,
       aceptado: true
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RECUPERACIÓN DE CONTRASEÑA CON OTP (EmailJS — sin Supabase Magic Link)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Genera un OTP de 6 dígitos, lo guarda hasheado en public.password_resets
+ * y lo envía al correo del usuario vía EmailJS.
+ *
+ * POST /api/auth/solicitar-recuperacion
+ * Body: { email: string }
+ */
+export async function solicitarRecuperacionController(req, res, next) {
+  try {
+    const { email } = req.body || {};
+    if (!email) throw new AppError('El correo electrónico es requerido.', 400);
+
+    // Verificar que el usuario existe en Supabase Auth
+    const { data: { users }, error: errorBusqueda } = await supabaseAdmin.auth.admin.listUsers();
+    if (errorBusqueda) throw new AppError('Error verificando el correo en el sistema.', 500);
+
+    const usuarioExiste = users?.some(u => u.email?.toLowerCase() === email.toLowerCase());
+    // Por seguridad, no revelamos si el correo existe o no
+    if (!usuarioExiste) {
+      return responderExito(res, {
+        mensaje: 'Si el correo está registrado, recibirás las instrucciones en breve.'
+      });
+    }
+
+    // Generar OTP de 6 dígitos
+    const otpCodigo = String(Math.floor(100000 + Math.random() * 900000));
+    const otpHash = crypto.createHash('sha256').update(otpCodigo).digest('hex');
+    const expiresAt = new Date(
+      Date.now() + CONFIGURACION.RECUPERACION.OTP_EXPIRA_MINUTOS * 60 * 1000
+    ).toISOString();
+
+    // Invalidar OTPs anteriores del mismo correo (evitar acumulación)
+    await supabaseAdmin
+      .from('password_resets')
+      .update({ usado: true })
+      .eq('email', email.toLowerCase())
+      .eq('usado', false);
+
+    // Guardar nuevo OTP hasheado
+    const { error: errorInsert } = await supabaseAdmin.from('password_resets').insert({
+      email: email.toLowerCase(),
+      otp_hash: otpHash,
+      expires_at: expiresAt,
+    });
+
+    if (errorInsert) throw new AppError('Error generando código de recuperación.', 500);
+
+    // Enviar correo vía EmailJS
+    await enviarCorreoRecuperacion(email, otpCodigo);
+
+    console.log(`[Recuperación] OTP enviado a ${email}`);
+
+    return responderExito(res, {
+      mensaje: 'Si el correo está registrado, recibirás las instrucciones en breve.'
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Valida el OTP ingresado y actualiza la contraseña del usuario en Supabase Auth.
+ *
+ * POST /api/auth/restablecer-contrasena
+ * Body: { email: string, otp: string, nuevaContrasena: string }
+ */
+export async function restablecerContrasenaController(req, res, next) {
+  try {
+    const { email, otp, nuevaContrasena } = req.body || {};
+
+    if (!email || !otp || !nuevaContrasena) {
+      throw new AppError('Correo, código OTP y nueva contraseña son requeridos.', 400);
+    }
+    if (nuevaContrasena.length < 6) {
+      throw new AppError('La nueva contraseña debe tener al menos 6 caracteres.', 400);
+    }
+
+    const otpHashIngresado = crypto.createHash('sha256').update(otp.trim()).digest('hex');
+
+    // Buscar el OTP más reciente válido para ese correo
+    const { data: registros, error: errorConsulta } = await supabaseAdmin
+      .from('password_resets')
+      .select('*')
+      .eq('email', email.toLowerCase())
+      .eq('usado', false)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (errorConsulta) throw new AppError('Error verificando el código de recuperación.', 500);
+
+    const registro = registros?.[0];
+
+    if (!registro) {
+      throw new AppError('Código inválido o ya utilizado. Solicita uno nuevo.', 400);
+    }
+
+    // Verificar expiración
+    if (new Date() > new Date(registro.expires_at)) {
+      await supabaseAdmin.from('password_resets').update({ usado: true }).eq('id', registro.id);
+      throw new AppError(`El código ha expirado. Tiene validez de ${CONFIGURACION.RECUPERACION.OTP_EXPIRA_MINUTOS} minutos.`, 400);
+    }
+
+    // Incrementar intentos y verificar límite
+    const intentosActualizados = (registro.intentos || 0) + 1;
+    if (intentosActualizados > CONFIGURACION.RECUPERACION.MAX_INTENTOS) {
+      await supabaseAdmin.from('password_resets').update({ usado: true }).eq('id', registro.id);
+      throw new AppError('Demasiados intentos fallidos. Solicita un nuevo código.', 429);
+    }
+
+    // Comparar hash
+    if (registro.otp_hash !== otpHashIngresado) {
+      await supabaseAdmin
+        .from('password_resets')
+        .update({ intentos: intentosActualizados })
+        .eq('id', registro.id);
+      throw new AppError(
+        `Código incorrecto. Te quedan ${CONFIGURACION.RECUPERACION.MAX_INTENTOS - intentosActualizados} intento(s).`,
+        400
+      );
+    }
+
+    // OTP válido → Buscar userId por email
+    const { data: { users }, error: errorLista } = await supabaseAdmin.auth.admin.listUsers();
+    if (errorLista) throw new AppError('Error localizando al usuario.', 500);
+
+    const usuario = users?.find(u => u.email?.toLowerCase() === email.toLowerCase());
+    if (!usuario) throw new AppError('No existe un usuario con ese correo.', 404);
+
+    // Actualizar contraseña vía Supabase Admin
+    const { error: errorActualizar } = await supabaseAdmin.auth.admin.updateUserById(
+      usuario.id,
+      { password: nuevaContrasena }
+    );
+    if (errorActualizar) throw new AppError('No se pudo actualizar la contraseña.', 500);
+
+    // Marcar OTP como usado
+    await supabaseAdmin.from('password_resets').update({ usado: true }).eq('id', registro.id);
+
+    console.log(`[Recuperación] Contraseña restablecida para ${email}`);
+
+    return responderExito(res, {
+      mensaje: 'Contraseña restablecida con éxito. Ya puedes iniciar sesión con tu nueva clave.'
     });
   } catch (err) {
     next(err);

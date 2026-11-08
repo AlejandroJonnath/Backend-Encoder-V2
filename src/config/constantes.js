@@ -45,5 +45,18 @@ export const CONFIGURACION = {
     AGREGAR_NOTA: 'addnote',
     IA_RESUMEN: 'ai_summary',
     IA_TRADUCIR: 'ai_translate'
-  }
+  },
+
+  EMAILJS: {
+    SERVICE_ID: process.env.EMAILJS_SERVICE_ID,
+    TEMPLATE_ID: process.env.EMAILJS_TEMPLATE_ID,
+    PUBLIC_KEY: process.env.EMAILJS_PUBLIC_KEY,
+    PRIVATE_KEY: process.env.EMAILJS_PRIVATE_KEY,
+    API_URL: 'https://api.emailjs.com/api/v1.0/email/send',
+  },
+
+  RECUPERACION: {
+    OTP_EXPIRA_MINUTOS: 10,
+    MAX_INTENTOS: 3,
+  },
 };
