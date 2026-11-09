@@ -59,4 +59,9 @@ export const CONFIGURACION = {
     OTP_EXPIRA_MINUTOS: 10,
     MAX_INTENTOS: 3,
   },
+
+  ILOVEPDF: {
+    PUBLIC_KEY: process.env.ILOVEPDF_PUBLIC_KEY,
+    SECRET_KEY: process.env.ILOVEPDF_SECRET_KEY,
+  },
 };

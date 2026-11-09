@@ -9,6 +9,8 @@ import puppeteer from 'puppeteer';
 import { exec } from 'child_process';
 import util from 'util';
 import { eliminarArchivoSeguro } from './cleanup.service.js';
+import { CONFIGURACION } from '../config/constantes.js';
+import { convertirConILovePdf } from './ilovepdf.service.js';
 
 const execPromesa = util.promisify(exec);
 
@@ -536,6 +538,15 @@ export async function convertirWordAPdf(rutaDocx) {
   const rutaAbsolutaDocx = path.resolve(rutaDocx);
   const rutaAbsolutaPdf = path.resolve(rutaFinalPdf);
 
+  // 0. Motor Supremo Cloud (iLovePDF API Oficial - Fidelidad 100% idéntica a Microsoft Office)
+  if (CONFIGURACION.ILOVEPDF?.PUBLIC_KEY && CONFIGURACION.ILOVEPDF?.SECRET_KEY) {
+    try {
+      return await convertirConILovePdf({ rutaArchivo: rutaDocx, rutaSalidaPdf: rutaFinalPdf });
+    } catch (errIlove) {
+      console.warn('[Word] iLovePDF API falló o agotó cuota, probando motor alternativo:', errIlove.message);
+    }
+  }
+
   // 1. Motor Primario (Windows): Automatización COM de Microsoft Word oficial
   if (process.platform === 'win32') {
     try {
@@ -702,6 +713,15 @@ export async function convertirPowerPointAPdf(rutaPptx) {
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
   const rutaAbsolutaPptx = path.resolve(rutaPptx);
   const rutaAbsolutaPdf = path.resolve(rutaFinalPdf);
+
+  // 0. Motor Supremo Cloud (iLovePDF API Oficial - Fidelidad 100% idéntica a Microsoft Office)
+  if (CONFIGURACION.ILOVEPDF?.PUBLIC_KEY && CONFIGURACION.ILOVEPDF?.SECRET_KEY) {
+    try {
+      return await convertirConILovePdf({ rutaArchivo: rutaPptx, rutaSalidaPdf: rutaFinalPdf });
+    } catch (errIlove) {
+      console.warn('[PowerPoint] iLovePDF API falló o agotó cuota, probando motor alternativo:', errIlove.message);
+    }
+  }
 
   // 1. Motor Primario (Windows): Automatización COM de Microsoft PowerPoint oficial
   if (process.platform === 'win32') {

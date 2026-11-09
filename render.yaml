@@ -19,4 +19,8 @@ services:
         value: "2147483648"
       - key: TTL_ARCHIVOS_TEMPORALES_MINUTOS
         value: "30"
+      - key: ILOVEPDF_PUBLIC_KEY
+        sync: false
+      - key: ILOVEPDF_SECRET_KEY
+        sync: false
 

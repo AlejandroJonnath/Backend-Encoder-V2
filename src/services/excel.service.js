@@ -6,6 +6,8 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { exec } from 'child_process';
 import util from 'util';
 import { renderizarHtmlConNavegador, obtenerBinarioLibreOffice } from './office.service.js';
+import { CONFIGURACION } from '../config/constantes.js';
+import { convertirConILovePdf } from './ilovepdf.service.js';
 
 const execPromesa = util.promisify(exec);
 
@@ -78,6 +80,15 @@ export async function convertirExcelConHojasSeleccionadas({
   const rutaAbsolutaPdf = path.resolve(rutaFinalPdf);
 
   const procesarTodas = hojasAProcesar.length === todasLasHojas.length;
+
+  // 0. Motor Supremo Cloud (iLovePDF API Oficial - Fidelidad 100% idéntica para Excel)
+  if (procesarTodas && CONFIGURACION.ILOVEPDF?.PUBLIC_KEY && CONFIGURACION.ILOVEPDF?.SECRET_KEY) {
+    try {
+      return await convertirConILovePdf({ rutaArchivo: rutaExcel, rutaSalidaPdf: rutaFinalPdf });
+    } catch (errIlove) {
+      console.warn('[Excel] iLovePDF API falló o agotó cuota, probando motor alternativo:', errIlove.message);
+    }
+  }
 
   // 1. Motor Primario (Windows): Automatización COM de Microsoft Excel oficial (Fidelidad 1:1)
   if (process.platform === 'win32' && procesarTodas) {
