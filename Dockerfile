@@ -1,18 +1,26 @@
 FROM node:20-bullseye-slim
 
 # Definir entorno de producción
+# PUPPETEER_EXECUTABLE_PATH apunta al Chromium del sistema para Motor 3 (fallback HTML→PDF)
 ENV NODE_ENV=production \
-    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Instalar dependencias del sistema: Ghostscript, LibreOffice, fuentes tipográficas y curl para healthcheck
+# Instalar dependencias del sistema:
+# - LibreOffice (Motor 2): conversión fiel de Word/PPT/Excel a PDF en Linux
+# - Chromium (Motor 3 fallback): renderizado HTML→PDF via Puppeteer cuando LibreOffice falla
+# - Ghostscript: compresión y manipulación de PDFs
+# - Fuentes tipográficas: necesarias para LibreOffice y renderizado HTML correcto
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     libreoffice \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
+    chromium \
     fonts-liberation \
     fonts-dejavu-core \
+    fonts-noto \
     fontconfig \
     curl \
     && rm -rf /var/lib/apt/lists/*

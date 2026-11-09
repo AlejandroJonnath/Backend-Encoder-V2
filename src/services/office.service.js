@@ -16,6 +16,15 @@ let binarioLibreOfficeCache = undefined;
 let binarioNavegadorCache = undefined;
 
 /**
+ * Ejecuta un script de PowerShell codificado en Base64 para evitar problemas de escape
+ */
+async function ejecutarPowerShellSeguro(script, timeoutMs = 90000) {
+  const base64Ps = Buffer.from(script, 'utf16le').toString('base64');
+  const cmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${base64Ps}`;
+  return await execPromesa(cmd, { timeout: timeoutMs });
+}
+
+/**
  * Detecta qué binario de LibreOffice/soffice está disponible en el sistema operativo
  */
 export async function obtenerBinarioLibreOffice() {
@@ -53,11 +62,21 @@ export async function obtenerBinarioLibreOffice() {
 
 /**
  * Detecta un navegador basado en Chromium (Google Chrome o Microsoft Edge)
- * para renderizado nativo headless sin dependencias de WebSocket
+ * para renderizado nativo headless sin dependencias de WebSocket.
+ * En Docker/Render usa PUPPETEER_EXECUTABLE_PATH si está definido.
  */
 export async function obtenerBinarioNavegador() {
   if (binarioNavegadorCache !== undefined) {
     return binarioNavegadorCache;
+  }
+
+  // Variable de entorno configurada en el Dockerfile para Render/Docker
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    const binEnv = process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (fs.existsSync(binEnv)) {
+      binarioNavegadorCache = binEnv;
+      return binEnv;
+    }
   }
 
   const candidatos = process.platform === 'win32'
@@ -70,13 +89,15 @@ export async function obtenerBinarioNavegador() {
         'msedge'
       ]
     : [
-        'google-chrome',
-        'google-chrome-stable',
+        // Debian/Ubuntu (Render)
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
         'chromium',
         'chromium-browser',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser'
+        'google-chrome',
+        'google-chrome-stable'
       ];
 
   for (const bin of candidatos) {
@@ -166,7 +187,6 @@ function envolverTexto(texto, maxCaracteres) {
     } else {
       if (lineaActual) lineas.push(lineaActual);
       if (palabra.length > maxCaracteres) {
-        // Cortar palabra extremadamente larga
         let resto = palabra;
         while (resto.length > maxCaracteres) {
           lineas.push(resto.substring(0, maxCaracteres));
@@ -204,7 +224,7 @@ export async function renderizarHtmlConNavegador({ html, rutaSalidaPdf, landscap
       try {
         const flagLandscape = landscape ? '--print-to-pdf-landscape' : '';
         const cmd = `"${binarioNav}" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage ${flagLandscape} --print-to-pdf="${rutaSalidaPdf}" "${rutaHtmlTemp}"`;
-        await execPromesa(cmd, { timeout: 35000 });
+        await execPromesa(cmd, { timeout: 45000 });
 
         if (fs.existsSync(rutaSalidaPdf) && fs.statSync(rutaSalidaPdf).size > 0) {
           return true;
@@ -219,9 +239,14 @@ export async function renderizarHtmlConNavegador({ html, rutaSalidaPdf, landscap
       const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppeteer-job-'));
       let browser;
       try {
+        // En Linux/Docker usar el ejecutable del sistema (PUPPETEER_EXECUTABLE_PATH o /usr/bin/chromium)
+        const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+          || (process.platform !== 'win32' ? (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : fs.existsSync('/usr/bin/chromium-browser') ? '/usr/bin/chromium-browser' : undefined) : undefined);
+
         browser = await puppeteer.launch({
           headless: true,
           userDataDir,
+          executablePath,
           args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
         const page = await browser.newPage();
@@ -233,7 +258,7 @@ export async function renderizarHtmlConNavegador({ html, rutaSalidaPdf, landscap
           printBackground: true,
           margin: landscape
             ? { top: 0, bottom: 0, left: 0, right: 0 }
-            : { top: '20mm', bottom: '20mm', left: '20mm', right: '20mm' }
+            : { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' }
         });
 
         if (fs.existsSync(rutaSalidaPdf) && fs.statSync(rutaSalidaPdf).size > 0) {
@@ -308,7 +333,6 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
   const fontCourier = await pdfDoc.embedFont(StandardFonts.Courier);
   const fontCourierBold = await pdfDoc.embedFont(StandardFonts.CourierBold);
 
-  // Dividir y envolver líneas para que ninguna se corte a los 85 caracteres
   const lineasBrutas = contenido.split(/\r?\n/);
   const lineasFormateadas = [];
 
@@ -330,7 +354,7 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
     const { width, height } = pagina.getSize();
     const lote = lineasFormateadas.slice(i, i + lineasPorPagina);
 
-    // Encabezado decorativo
+    // Encabezado
     pagina.drawText(sanitizarParaPdfLib(nombreBase.toUpperCase()), {
       x: 45,
       y: height - 35,
@@ -377,304 +401,54 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
 }
 
 /**
- * Fallback estructurado con pdf-lib para Word cuando no hay navegadores en el sistema.
- * Genera un documento con jerarquía de títulos, párrafos con ajuste de línea y diseño tipográfico profesional.
- */
-async function generarPdfWordEstructurado({ html, textoExtraido, rutaDestino, nombreArchivo }) {
-  const pdfDoc = await PDFDocument.create();
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const fontOblique = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-
-  // Extraer bloques de contenido desde el HTML generado por Mammoth
-  const bloques = [];
-  const regexBloques = /<(h[1-6]|p|li|blockquote)[^>]*>([\s\S]*?)<\/\1>/gi;
-  let match;
-
-  while ((match = regexBloques.exec(html)) !== null) {
-    const etiqueta = match[1].toLowerCase();
-    const contenidoHtml = match[2];
-    const textoPlano = decodificarEntidadesHtml(contenidoHtml.replace(/<[^>]+>/g, '')).trim();
-
-    if (textoPlano) {
-      bloques.push({
-        tipo: etiqueta.startsWith('h') ? 'titulo' : (etiqueta === 'li' ? 'item' : 'parrafo'),
-        nivel: etiqueta.startsWith('h') ? parseInt(etiqueta.charAt(1), 10) : 0,
-        texto: textoPlano
-      });
-    }
-  }
-
-  // Si no se extrajeron bloques del HTML, usar el texto extraído
-  if (bloques.length === 0) {
-    const lineas = (textoExtraido || '').split(/\r?\n/).filter(l => l.trim());
-    if (lineas.length === 0) {
-      bloques.push({ tipo: 'parrafo', texto: 'Documento procesado sin contenido visible.' });
-    } else {
-      for (const linea of lineas) {
-        bloques.push({ tipo: 'parrafo', texto: linea.trim() });
-      }
-    }
-  }
-
-  let pagina = pdfDoc.addPage([595.28, 841.89]);
-  let { width, height } = pagina.getSize();
-  const margenX = 54; // 19 mm
-  let cursorY = height - 60;
-  let numeroPagina = 1;
-
-  function verificarSaltoPagina(espacioRequerido) {
-    if (cursorY - espacioRequerido < 50) {
-      // Dibujar pie de página en página saliente
-      pagina.drawText(`Página ${numeroPagina}`, {
-        x: width - margenX - 60,
-        y: 30,
-        size: 9,
-        font: fontRegular,
-        color: rgb(0.5, 0.55, 0.6)
-      });
-
-      numeroPagina++;
-      pagina = pdfDoc.addPage([595.28, 841.89]);
-      cursorY = height - 60;
-    }
-  }
-
-  for (const b of bloques) {
-    if (b.tipo === 'titulo') {
-      const fontSize = b.nivel === 1 ? 18 : (b.nivel === 2 ? 14 : 12);
-      const interlineado = fontSize + 6;
-      const lineas = envolverTexto(sanitizarParaPdfLib(b.texto), b.nivel === 1 ? 48 : 60);
-
-      verificarSaltoPagina((lineas.length * interlineado) + 20);
-      cursorY -= 12;
-
-      for (const l of lineas) {
-        pagina.drawText(l, {
-          x: margenX,
-          y: cursorY,
-          size: fontSize,
-          font: fontBold,
-          color: rgb(0.06, 0.09, 0.16) // #0F172A
-        });
-        cursorY -= interlineado;
-      }
-
-      if (b.nivel === 1) {
-        pagina.drawLine({
-          start: { x: margenX, y: cursorY + 4 },
-          end: { x: width - margenX, y: cursorY + 4 },
-          color: rgb(0.85, 0.88, 0.92),
-          thickness: 1.2
-        });
-      }
-      cursorY -= 8;
-    } else if (b.tipo === 'item') {
-      const lineas = envolverTexto(sanitizarParaPdfLib(b.texto), 70);
-      verificarSaltoPagina(lineas.length * 15);
-
-      lineas.forEach((l, idx) => {
-        if (idx === 0) {
-          pagina.drawCircle({
-            x: margenX + 6,
-            y: cursorY + 3,
-            size: 2.2,
-            color: rgb(0.01, 0.52, 0.78)
-          });
-        }
-        pagina.drawText(l, {
-          x: margenX + 16,
-          y: cursorY,
-          size: 10,
-          font: fontRegular,
-          color: rgb(0.12, 0.16, 0.22)
-        });
-        cursorY -= 15;
-      });
-      cursorY -= 4;
-    } else {
-      const lineas = envolverTexto(sanitizarParaPdfLib(b.texto), 75);
-      verificarSaltoPagina((lineas.length * 15) + 6);
-
-      for (const l of lineas) {
-        pagina.drawText(l, {
-          x: margenX,
-          y: cursorY,
-          size: 10,
-          font: fontRegular,
-          color: rgb(0.12, 0.16, 0.22)
-        });
-        cursorY -= 15;
-      }
-      cursorY -= 6;
-    }
-  }
-
-  // Pie de página final
-  pagina.drawText(`Página ${numeroPagina}`, {
-    x: width - margenX - 60,
-    y: 30,
-    size: 9,
-    font: fontRegular,
-    color: rgb(0.5, 0.55, 0.6)
-  });
-
-  const bytes = await pdfDoc.save({ useObjectStreams: true });
-  await fs.promises.writeFile(rutaDestino, bytes);
-
-  return {
-    rutaArchivo: rutaDestino,
-    nombreArchivo
-  };
-}
-
-/**
- * Fallback de alta fidelidad con pdf-lib para PowerPoint cuando no hay navegadores en el sistema.
- * Genera diapositivas en A4 apaisado (Landscape 841.89 x 595.28 pt) con tarjetas, badges,
- * títulos en negrita de alta jerarquía, divisores y viñetas dibujadas vectorialmente.
- */
-async function generarPdfPresentacionDesdeDiapositivas({ diapositivas, rutaDestino, nombreArchivo }) {
-  const pdfDoc = await PDFDocument.create();
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const fontNormal = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-  const total = diapositivas.length || 1;
-
-  for (let i = 0; i < diapositivas.length; i++) {
-    const s = diapositivas[i];
-    // A4 Landscape estándar
-    const page = pdfDoc.addPage([841.89, 595.28]);
-    const { width, height } = page.getSize();
-
-    // 1. Fondo elegante oscuro (Tema Dark Zinc / Slate)
-    page.drawRectangle({
-      x: 0,
-      y: 0,
-      width,
-      height,
-      color: rgb(0.06, 0.07, 0.10) // #0F172A
-    });
-
-    // 2. Tarjeta contenedora de la diapositiva
-    const cardMargin = 32;
-    page.drawRectangle({
-      x: cardMargin,
-      y: cardMargin,
-      width: width - (cardMargin * 2),
-      height: height - (cardMargin * 2),
-      color: rgb(0.09, 0.11, 0.16), // #171E2E
-      borderColor: rgb(0.20, 0.25, 0.35),
-      borderWidth: 1
-    });
-
-    // 3. Badge superior
-    const badgeText = `DIAPOSITIVA ${s.numero || (i + 1)} DE ${total}`;
-    page.drawText(badgeText, {
-      x: cardMargin + 32,
-      y: height - cardMargin - 45,
-      size: 11,
-      font: fontBold,
-      color: rgb(0.22, 0.74, 0.97) // #38BDF8
-    });
-
-    // 4. Título de la diapositiva con ajuste de línea si es largo
-    const tituloLimpio = sanitizarParaPdfLib(s.titulo || `Diapositiva ${i + 1}`);
-    const lineasTitulo = envolverTexto(tituloLimpio, 52);
-    let curY = height - cardMargin - 78;
-
-    for (const lt of lineasTitulo.slice(0, 2)) {
-      page.drawText(lt, {
-        x: cardMargin + 32,
-        y: curY,
-        size: 20,
-        font: fontBold,
-        color: rgb(1, 1, 1)
-      });
-      curY -= 26;
-    }
-
-    // 5. Divisor decorativo
-    page.drawLine({
-      start: { x: cardMargin + 32, y: curY - 2 },
-      end: { x: cardMargin + 160, y: curY - 2 },
-      color: rgb(0.22, 0.74, 0.97),
-      thickness: 3
-    });
-
-    curY -= 32;
-
-    // 6. Lista de puntos y viñetas
-    const puntos = Array.isArray(s.puntos) && s.puntos.length > 0
-      ? s.puntos
-      : ['Contenido de la presentación'];
-
-    for (const p of puntos.slice(0, 7)) {
-      const textoLimpio = sanitizarParaPdfLib(decodificarEntidadesHtml(p));
-      const lineasPunto = envolverTexto(textoLimpio, 72);
-
-      // Viñeta circular decorativa
-      page.drawCircle({
-        x: cardMargin + 44,
-        y: curY + 4,
-        size: 4,
-        color: rgb(0.22, 0.74, 0.97)
-      });
-
-      for (let idx = 0; idx < lineasPunto.length; idx++) {
-        page.drawText(lineasPunto[idx], {
-          x: cardMargin + 62,
-          y: curY,
-          size: 13,
-          font: fontNormal,
-          color: rgb(0.89, 0.91, 0.94) // #E2E8F0
-        });
-        curY -= 20;
-      }
-      curY -= 10;
-    }
-
-    // 7. Pie de página
-    page.drawText('EncoderGoti Presentation Suite', {
-      x: cardMargin + 32,
-      y: cardMargin + 22,
-      size: 9.5,
-      font: fontNormal,
-      color: rgb(0.40, 0.45, 0.55)
-    });
-
-    page.drawText(`Diapositiva ${s.numero || (i + 1)}`, {
-      x: width - cardMargin - 110,
-      y: cardMargin + 22,
-      size: 9.5,
-      font: fontNormal,
-      color: rgb(0.40, 0.45, 0.55)
-    });
-  }
-
-  const bytes = await pdfDoc.save({ useObjectStreams: true });
-  await fs.promises.writeFile(rutaDestino, bytes);
-
-  return {
-    rutaArchivo: rutaDestino,
-    nombreArchivo
-  };
-}
-
-/**
- * Convierte documentos Word (.docx, .doc) a PDF con maquetación completa
+ * Convierte documentos Word (.docx, .doc) a PDF con fidelidad exacta al original
  */
 export async function convertirWordAPdf(rutaDocx) {
   const extension = path.extname(rutaDocx).toLowerCase();
   const dirSalida = path.dirname(rutaDocx);
   const nombreBase = path.basename(rutaDocx, extension);
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
+  const rutaAbsolutaDocx = path.resolve(rutaDocx);
+  const rutaAbsolutaPdf = path.resolve(rutaFinalPdf);
 
-  // 1. Motor Primario: LibreOffice Headless (si está instalado en el servidor o contenedor)
+  // 1. Motor Primario (Windows): Automatización COM de Microsoft Word oficial
+  if (process.platform === 'win32') {
+    try {
+      const scriptPs = `
+        $word = New-Object -ComObject Word.Application
+        $word.Visible = $false
+        $word.DisplayAlerts = [Microsoft.Office.Interop.Word.WdAlertLevel]::wdAlertsNone
+        try {
+          $doc = $word.Documents.Open('${rutaAbsolutaDocx.replace(/'/g, "''")}', $false, $true)
+          $doc.SaveAs2('${rutaAbsolutaPdf.replace(/'/g, "''")}', 17)
+          $doc.Close($false)
+        } finally {
+          $word.Quit()
+          [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
+        }
+      `;
+      await ejecutarPowerShellSeguro(scriptPs, 60000);
+
+      if (fs.existsSync(rutaFinalPdf) && fs.statSync(rutaFinalPdf).size > 0) {
+        return {
+          rutaArchivo: rutaFinalPdf,
+          nombreArchivo: `${nombreBase}_converted.pdf`
+        };
+      }
+    } catch (errCom) {
+      console.warn('[Word] Automatización COM de Word no disponible o bloqueada, probando motor alternativo:', errCom.message);
+    }
+  }
+
+  // 2. Motor Primario (Linux/Docker): LibreOffice Headless
   const binarioLo = await obtenerBinarioLibreOffice();
   if (binarioLo) {
+    // Directorio de perfil temporal único para evitar conflictos en entornos sin $HOME (Docker/Render)
+    const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
     try {
-      const comandoLo = `"${binarioLo}" --headless --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
-      await execPromesa(comandoLo, { timeout: 60000 });
+      const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
+      const comandoLo = `"${binarioLo}" --headless --norestore --nofirststartwizard -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
+      await execPromesa(comandoLo, { timeout: 90000 });
       const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
       if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
@@ -686,36 +460,39 @@ export async function convertirWordAPdf(rutaDocx) {
         };
       }
     } catch (errLo) {
-      console.warn('[Word] LibreOffice no completó la conversión, pasando a motor alternativo:', errLo.message);
+      console.warn('[Word] LibreOffice falló, recurriendo a Mammoth con extracción de imágenes:', errLo.message);
+    } finally {
+      try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }
 
-  // 2. Motor Secundario: Mammoth + Renderizador HTML Chromium
+  // 3. Motor Secundario: Mammoth con extracción nativa de imágenes incrustadas en Base64 + Chromium
   let htmlCuerpo = '';
-  let textoExtraido = '';
-
   try {
-    const resultadoMammoth = await mammoth.convertToHtml({ path: rutaDocx });
-    htmlCuerpo = resultadoMammoth.value;
-    const raw = await mammoth.extractRawText({ path: rutaDocx }).catch(() => null);
-    if (raw?.value) textoExtraido = raw.value;
-  } catch (errMammoth) {
-    console.warn(`[Word] Mammoth no pudo parsear como .docx directo (${errMammoth.message}), intentando extracción alternativa...`);
-  }
-
-  // Fallbacks para documentos sin formato HTML enriquecido
-  if (!htmlCuerpo || htmlCuerpo.trim() === '') {
-    try {
-      const textoPuro = await mammoth.extractRawText({ path: rutaDocx });
-      if (textoPuro?.value?.trim()) {
-        textoExtraido = textoPuro.value;
-        htmlCuerpo = textoPuro.value.split(/\r?\n/).filter(l => l.trim()).map(p => `<p>${escaparHtml(p)}</p>`).join('');
+    const resultadoMammoth = await mammoth.convertToHtml(
+      { path: rutaDocx },
+      {
+        convertImage: mammoth.images.imgElement((image) => {
+          return image.read('base64').then((imageBuffer) => {
+            return {
+              src: `data:${image.contentType};base64,${imageBuffer}`
+            };
+          });
+        })
       }
-    } catch (_) {}
+    );
+    htmlCuerpo = resultadoMammoth.value;
+  } catch (errMammoth) {
+    console.warn(`[Word] Mammoth falló al extraer HTML: ${errMammoth.message}`);
   }
 
   if (!htmlCuerpo || htmlCuerpo.trim() === '') {
-    htmlCuerpo = '<p>El documento procesado no contiene texto visible.</p>';
+    const raw = await mammoth.extractRawText({ path: rutaDocx }).catch(() => null);
+    if (raw?.value) {
+      htmlCuerpo = raw.value.split(/\r?\n/).filter(l => l.trim()).map(p => `<p>${escaparHtml(p)}</p>`).join('');
+    } else {
+      htmlCuerpo = '<p>El documento no contiene texto visible.</p>';
+    }
   }
 
   const htmlDocumento = `
@@ -727,31 +504,26 @@ export async function convertirWordAPdf(rutaDocx) {
       <style>
         @page {
           size: A4 portrait;
-          margin: 22mm 20mm 22mm 20mm;
+          margin: 20mm 18mm 20mm 18mm;
         }
         * { box-sizing: border-box; }
         body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Calibri, Arial, sans-serif;
           font-size: 11pt;
-          line-height: 1.6;
+          line-height: 1.5;
           color: #1e293b;
           background: #ffffff;
           margin: 0;
           padding: 0;
         }
-        h1 { font-size: 22pt; font-weight: 700; color: #0f172a; margin-top: 0; margin-bottom: 12pt; border-bottom: 2px solid #e2e8f0; padding-bottom: 6pt; }
-        h2 { font-size: 16pt; font-weight: 600; color: #1e293b; margin-top: 16pt; margin-bottom: 8pt; }
-        h3 { font-size: 13pt; font-weight: 600; color: #334155; margin-top: 12pt; margin-bottom: 6pt; }
-        p { margin-top: 0; margin-bottom: 10pt; text-align: justify; word-wrap: break-word; }
-        table { border-collapse: collapse; width: 100%; margin: 14pt 0; page-break-inside: avoid; }
-        th, td { border: 1px solid #cbd5e1; padding: 7pt 10pt; text-align: left; font-size: 10pt; }
-        th { background-color: #f8fafc; font-weight: 600; color: #0f172a; }
-        img { max-width: 100%; height: auto; display: block; margin: 14pt auto; page-break-inside: avoid; border-radius: 4px; }
-        ul, ol { margin-top: 0; margin-bottom: 10pt; padding-left: 22pt; }
-        li { margin-bottom: 4pt; }
-        blockquote { border-left: 4px solid #0284c7; margin: 12pt 0; padding: 8pt 16pt; color: #475569; background: #f8fafc; font-style: italic; }
-        strong { font-weight: 600; color: #0f172a; }
-        a { color: #0284c7; text-decoration: underline; }
+        h1, h2, h3, h4, h5, h6 { color: #0f172a; margin-top: 14pt; margin-bottom: 6pt; }
+        p { margin-top: 0; margin-bottom: 8pt; text-align: justify; word-wrap: break-word; }
+        table { border-collapse: collapse; width: 100%; margin: 12pt 0; page-break-inside: avoid; }
+        th, td { border: 1px solid #94a3b8; padding: 6pt 8pt; text-align: left; font-size: 10pt; }
+        th { background-color: #f1f5f9; font-weight: bold; }
+        img { max-width: 100%; height: auto; display: block; margin: 12pt auto; page-break-inside: avoid; }
+        ul, ol { margin-top: 0; margin-bottom: 8pt; padding-left: 20pt; }
+        li { margin-bottom: 3pt; }
       </style>
     </head>
     <body>
@@ -760,7 +532,6 @@ export async function convertirWordAPdf(rutaDocx) {
     </html>
   `;
 
-  // Intentar renderizar con Chromium (Chrome, Edge o Puppeteer)
   const exitoNav = await renderizarHtmlConNavegador({
     html: htmlDocumento,
     rutaSalidaPdf: rutaFinalPdf,
@@ -774,31 +545,57 @@ export async function convertirWordAPdf(rutaDocx) {
     };
   }
 
-  // 3. Fallback de alta fidelidad con pdf-lib (estructura párrafos, títulos H1/H2/H3 y listas)
-  console.log('[Word] Utilizando motor nativo estructurado de pdf-lib para Word');
-  return await generarPdfWordEstructurado({
-    html: htmlCuerpo,
-    textoExtraido,
-    rutaDestino: rutaFinalPdf,
-    nombreArchivo: `${nombreBase}_converted.pdf`
-  });
+  // Fallback seguro con pdf-lib
+  return await convertirTextoPlanoAPdf(rutaDocx);
 }
 
 /**
- * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF de diapositivas horizontales
+ * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF con fidelidad exacta al original
  */
 export async function convertirPowerPointAPdf(rutaPptx) {
   const extension = path.extname(rutaPptx).toLowerCase();
   const dirSalida = path.dirname(rutaPptx);
   const nombreBase = path.basename(rutaPptx, extension);
   const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
+  const rutaAbsolutaPptx = path.resolve(rutaPptx);
+  const rutaAbsolutaPdf = path.resolve(rutaFinalPdf);
 
-  // 1. Motor Primario: LibreOffice Headless (si está instalado en el servidor o contenedor)
+  // 1. Motor Primario (Windows): Automatización COM de Microsoft PowerPoint oficial
+  if (process.platform === 'win32') {
+    try {
+      const scriptPs = `
+        $ppt = New-Object -ComObject PowerPoint.Application
+        try {
+          $pres = $ppt.Presentations.Open('${rutaAbsolutaPptx.replace(/'/g, "''")}', [Microsoft.Office.Core.MsoTriState]::msoTrue, [Microsoft.Office.Core.MsoTriState]::msoFalse, [Microsoft.Office.Core.MsoTriState]::msoFalse)
+          $pres.SaveAs('${rutaAbsolutaPdf.replace(/'/g, "''")}', 32)
+          $pres.Close()
+        } finally {
+          $ppt.Quit()
+          [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null
+        }
+      `;
+      await ejecutarPowerShellSeguro(scriptPs, 90000);
+
+      if (fs.existsSync(rutaFinalPdf) && fs.statSync(rutaFinalPdf).size > 0) {
+        return {
+          rutaArchivo: rutaFinalPdf,
+          nombreArchivo: `${nombreBase}_converted.pdf`
+        };
+      }
+    } catch (errCom) {
+      console.warn('[PowerPoint] Automatización COM de PowerPoint no disponible o bloqueada, probando motor alternativo:', errCom.message);
+    }
+  }
+
+  // 2. Motor Primario (Linux/Docker): LibreOffice Headless
   const binarioLo = await obtenerBinarioLibreOffice();
   if (binarioLo) {
+    // Directorio de perfil temporal único para evitar conflictos en entornos sin $HOME (Docker/Render)
+    const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
     try {
-      const comandoLo = `"${binarioLo}" --headless --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
-      await execPromesa(comandoLo, { timeout: 60000 });
+      const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
+      const comandoLo = `"${binarioLo}" --headless --norestore --nofirststartwizard -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
+      await execPromesa(comandoLo, { timeout: 90000 });
       const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
       if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
@@ -810,18 +607,29 @@ export async function convertirPowerPointAPdf(rutaPptx) {
         };
       }
     } catch (errLo) {
-      console.warn('[PowerPoint] LibreOffice falló, recurriendo a motor secundario:', errLo.message);
+      console.warn('[PowerPoint] LibreOffice falló, recurriendo a extracción OpenXML con JSZip:', errLo.message);
+    } finally {
+      try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }
 
-  // 2. Motor Secundario: Extracción OpenXML con JSZip + Renderizado de Diapositivas
+  // 3. Motor Secundario: Extracción OpenXML con JSZip + Imágenes embebidas en Base64 + Chromium
   const diapositivasEstructuradas = [];
 
   try {
     const data = await fs.promises.readFile(rutaPptx);
     const zip = await JSZip.loadAsync(data);
 
-    // Buscar archivos de diapositivas ppt/slides/slideX.xml ordenados numéricamente
+    // Mapear todas las imágenes en base64
+    const mapaImagenes = {};
+    const mediaFiles = Object.keys(zip.files).filter(name => /^ppt\/media\//i.test(name));
+    for (const mf of mediaFiles) {
+      const extImg = path.extname(mf).toLowerCase().replace('.', '');
+      const mimeImg = extImg === 'png' ? 'image/png' : (extImg === 'jpg' || extImg === 'jpeg' ? 'image/jpeg' : 'image/png');
+      const b64 = await zip.file(mf).async('base64');
+      mapaImagenes[mf] = `data:${mimeImg};base64,${b64}`;
+    }
+
     const slideFiles = Object.keys(zip.files)
       .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
       .sort((a, b) => {
@@ -830,15 +638,28 @@ export async function convertirPowerPointAPdf(rutaPptx) {
         return numA - numB;
       });
 
-    const slides = slideFiles.length > 0
-      ? slideFiles
-      : Object.keys(zip.files).filter(name => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'));
-
-    for (let idx = 0; idx < slides.length; idx++) {
-      const slidePath = slides[idx];
+    for (let idx = 0; idx < slideFiles.length; idx++) {
+      const slidePath = slideFiles[idx];
       const xmlContenido = await zip.file(slidePath).async('string');
 
-      // Extraer párrafos de texto <a:p>
+      // Buscar relaciones de imágenes para este slide
+      const relsPath = slidePath.replace('ppt/slides/slide', 'ppt/slides/_rels/slide') + '.rels';
+      const imagenesSlide = [];
+
+      if (zip.file(relsPath)) {
+        const relsXml = await zip.file(relsPath).async('string');
+        const targetRegex = /Target="([^"]+\.(png|jpg|jpeg|gif|bmp))"/gi;
+        let matchRel;
+        while ((matchRel = targetRegex.exec(relsXml)) !== null) {
+          let target = matchRel[1].replace(/^\.\.\//, 'ppt/');
+          if (!target.startsWith('ppt/')) target = `ppt/${target}`;
+          if (mapaImagenes[target]) {
+            imagenesSlide.push(mapaImagenes[target]);
+          }
+        }
+      }
+
+      // Extraer párrafos <a:p>
       const parrafos = [];
       const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
       let matchP;
@@ -864,48 +685,53 @@ export async function convertirPowerPointAPdf(rutaPptx) {
 
       diapositivasEstructuradas.push({
         numero: idx + 1,
-        total: slides.length,
+        total: slideFiles.length,
         titulo,
-        puntos: cuerpo
+        puntos: cuerpo,
+        imagenes: imagenesSlide
       });
     }
   } catch (errZip) {
     console.warn(`[PowerPoint] Error leyendo estructura PPTX: ${errZip.message}`);
   }
 
-  // Fallback si no se encontraron diapositivas en el archivo
   if (diapositivasEstructuradas.length === 0) {
     diapositivasEstructuradas.push({
       numero: 1,
       total: 1,
       titulo: nombreBase,
-      puntos: ['Presentación convertida a formato PDF.']
+      puntos: ['Presentación convertida a formato PDF.'],
+      imagenes: []
     });
   }
 
-  // Generar HTML con maquetación Landscape A4 para cada diapositiva
+  // Generar HTML fiel con maquetación Landscape A4 para cada diapositiva
   const slidesHtml = diapositivasEstructuradas.map((s) => {
     return `
       <div class="slide">
         <div class="slide-header">
-          <div class="slide-badge">Diapositiva ${s.numero} de ${s.total}</div>
+          <div class="slide-number">Diapositiva ${s.numero} de ${s.total}</div>
           <h2 class="slide-title">${escaparHtml(s.titulo)}</h2>
-          <div class="slide-divider"></div>
         </div>
         <div class="slide-body">
-          ${s.puntos.length > 0
-            ? s.puntos.map(p => `
-                <div class="slide-bullet">
-                  <span class="bullet-dot">&#9679;</span>
-                  <span class="bullet-text">${escaparHtml(p)}</span>
-                </div>
-              `).join('')
-            : '<div class="slide-bullet"><span class="bullet-text" style="color:#94a3b8; font-style:italic;">(Diapositiva de presentación)</span></div>'
+          <div class="slide-text">
+            ${s.puntos.map(p => `
+              <div class="bullet-item">
+                <span class="bullet-symbol">•</span>
+                <span class="bullet-content">${escaparHtml(p)}</span>
+              </div>
+            `).join('')}
+          </div>
+          ${s.imagenes && s.imagenes.length > 0
+            ? `<div class="slide-media">
+                ${s.imagenes.map(imgSrc => `<img src="${imgSrc}" class="slide-img" />`).join('')}
+               </div>`
+            : ''
           }
         </div>
         <div class="slide-footer">
-          <span>EncoderGoti Presentation Suite</span>
-          <span>Diapositiva ${s.numero}</span>
+          <span>EncoderGoti</span>
+          <span>Página ${s.numero}</span>
         </div>
       </div>
     `;
@@ -926,75 +752,86 @@ export async function convertirPowerPointAPdf(rutaPptx) {
         body {
           margin: 0;
           padding: 0;
-          font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-          background: #0f172a;
-          color: #f8fafc;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+          background: #ffffff;
+          color: #1e293b;
         }
         .slide {
           width: 297mm;
           height: 210mm;
           page-break-after: always;
-          padding: 24mm 28mm 18mm 28mm;
+          padding: 20mm 24mm 16mm 24mm;
           display: flex;
           flex-direction: column;
           justify-content: space-between;
-          background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+          background: #ffffff;
           position: relative;
         }
-        .slide-badge {
-          display: inline-block;
-          font-size: 11pt;
-          font-weight: 700;
-          color: #38bdf8;
-          text-transform: uppercase;
-          letter-spacing: 1.5px;
-          margin-bottom: 6px;
+        .slide-header {
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 8px;
+          margin-bottom: 12px;
+        }
+        .slide-number {
+          font-size: 10pt;
+          color: #64748b;
+          margin-bottom: 4px;
         }
         .slide-title {
           font-size: 22pt;
           font-weight: 700;
-          color: #ffffff;
-          margin: 0 0 10px 0;
-          line-height: 1.3;
-        }
-        .slide-divider {
-          height: 4px;
-          width: 90px;
-          background: #38bdf8;
-          border-radius: 2px;
-          margin-bottom: 16px;
+          color: #0f172a;
+          margin: 0;
         }
         .slide-body {
           flex: 1;
           display: flex;
-          flex-direction: column;
-          gap: 12px;
-          justify-content: center;
+          gap: 20px;
+          align-items: flex-start;
+          overflow: hidden;
         }
-        .slide-bullet {
+        .slide-text {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .bullet-item {
           display: flex;
           align-items: flex-start;
-          gap: 12px;
-          font-size: 14pt;
-          line-height: 1.5;
-          color: #e2e8f0;
-        }
-        .bullet-dot {
-          color: #38bdf8;
-          font-size: 14pt;
+          gap: 8px;
+          font-size: 13pt;
           line-height: 1.4;
+          color: #334155;
         }
-        .bullet-text {
+        .bullet-symbol {
+          font-size: 14pt;
+          color: #0284c7;
+        }
+        .bullet-content {
           flex: 1;
+        }
+        .slide-media {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          max-width: 40%;
+          justify-content: center;
+          align-items: center;
+        }
+        .slide-img {
+          max-width: 100%;
+          max-height: 120mm;
+          object-fit: contain;
+          border-radius: 4px;
         }
         .slide-footer {
           display: flex;
           justify-content: space-between;
-          align-items: center;
-          font-size: 10pt;
-          color: #64748b;
-          border-top: 1px solid rgba(255,255,255,0.1);
-          padding-top: 8px;
+          font-size: 9pt;
+          color: #94a3b8;
+          border-top: 1px solid #f1f5f9;
+          padding-top: 6px;
         }
       </style>
     </head>
@@ -1004,7 +841,6 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     </html>
   `;
 
-  // Intentar renderizar las diapositivas apaisadas con Chromium
   const exitoNav = await renderizarHtmlConNavegador({
     html: htmlCompleto,
     rutaSalidaPdf: rutaFinalPdf,
@@ -1018,13 +854,8 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     };
   }
 
-  // 3. Fallback de alta fidelidad con pdf-lib (diapositivas visuales en A4 landscape con tarjetas)
-  console.log('[PowerPoint] Utilizando motor nativo de diapositivas en A4 landscape con pdf-lib');
-  return await generarPdfPresentacionDesdeDiapositivas({
-    diapositivas: diapositivasEstructuradas,
-    rutaDestino: rutaFinalPdf,
-    nombreArchivo: `${nombreBase}_converted.pdf`
-  });
+  // Fallback con pdf-lib
+  return await convertirTextoPlanoAPdf(rutaPptx);
 }
 
 /**
