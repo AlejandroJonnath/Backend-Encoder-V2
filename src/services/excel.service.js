@@ -1,15 +1,28 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import * as XLSX from 'xlsx';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { exec } from 'child_process';
 import util from 'util';
-import { renderizarHtmlConNavegador, obtenerBinarioLibreOffice } from './office.service.js';
-import { CONFIGURACION } from '../config/constantes.js';
-import { convertirConILovePdf } from './ilovepdf.service.js';
+import { obtenerBinarioLibreOffice } from './office.service.js';
 
 const execPromesa = util.promisify(exec);
+
+/**
+ * Sanitiza cualquier texto para evitar fallos de codificación en WinAnsi de pdf-lib
+ */
+function sanitizarParaPdfLib(str, fallback = '') {
+  if (!str) return fallback;
+  return String(str)
+    .normalize('NFC')
+    .replace(/[^\x00-\xFF]/g, (char) => {
+      const mapa = {
+        '—': '-', '–': '-', '’': "'", '‘': "'", '”': '"', '“': '"', '•': '*', '…': '...'
+      };
+      return mapa[char] || ' ';
+    })
+    .trim() || fallback;
+}
 
 /**
  * Ejecuta un script de PowerShell codificado en Base64 para evitar problemas de escape
@@ -54,6 +67,153 @@ export function inspeccionarHojasExcel(rutaExcel) {
 }
 
 /**
+ * Motor Autónomo Nativo de Excel a PDF (100% JavaScript, sin dependencias externas)
+ * Convierte el 100% de las hojas, filas y columnas, dividiendo hojas anchas
+ * en bloques legibles para que ninguna columna se trunque.
+ */
+export async function renderizarExcelNativoConPdfLib({ rutaExcel, rutaSalidaPdf, hojasAProcesar }) {
+  const buffer = fs.readFileSync(rutaExcel);
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+
+  const pdfDoc = await PDFDocument.create();
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  for (const nombreHoja of hojasAProcesar) {
+    const hoja = wb.Sheets[nombreHoja];
+    if (!hoja) continue;
+    const datos = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: '' });
+    if (!datos || datos.length === 0) continue;
+
+    // Detectar número real de columnas
+    let maxCols = 0;
+    datos.forEach(fila => {
+      if (fila.length > maxCols) maxCols = fila.length;
+    });
+    if (maxCols === 0) continue;
+
+    // Si tiene más de 6 columnas usamos orientación apaisada (Landscape A4: 841.89 x 595.28)
+    const esLandscape = maxCols > 6;
+    const anchoPag = esLandscape ? 841.89 : 595.28;
+    const altoPag = esLandscape ? 595.28 : 841.89;
+    const margenX = 30;
+    const anchoUtil = anchoPag - (margenX * 2);
+
+    // Si tiene muchas columnas, dividimos en bloques de máximo 10 columnas para que el texto sea perfectamente legible
+    const colsPorBloque = esLandscape ? (maxCols <= 14 ? maxCols : 10) : (maxCols <= 8 ? maxCols : 6);
+    const numBloques = Math.ceil(maxCols / colsPorBloque);
+
+    for (let b = 0; b < numBloques; b++) {
+      const colInicio = b * colsPorBloque;
+      const colFin = Math.min(maxCols, colInicio + colsPorBloque);
+      const totalColsBloque = colFin - colInicio;
+      const anchoCol = anchoUtil / totalColsBloque;
+
+      // 22 filas por página para que los datos respiren con margen y claridad
+      const filasPorPagina = 22;
+      const totalPaginasFila = Math.ceil(datos.length / filasPorPagina);
+
+      for (let p = 0; p < totalPaginasFila; p++) {
+        const pagina = pdfDoc.addPage([anchoPag, altoPag]);
+        const loteFilas = datos.slice(p * filasPorPagina, (p + 1) * filasPorPagina);
+
+        // Encabezado superior de la hoja
+        const subtituloBloque = numBloques > 1 ? ` (Columnas ${colInicio + 1} - ${colFin} de ${maxCols})` : '';
+        pagina.drawText(sanitizarParaPdfLib(`Hoja: ${nombreHoja}${subtituloBloque}`), {
+          x: margenX,
+          y: altoPag - 30,
+          size: 13,
+          font: fontBold,
+          color: rgb(0.01, 0.41, 0.63)
+        });
+
+        pagina.drawLine({
+          start: { x: margenX, y: altoPag - 36 },
+          end: { x: anchoPag - margenX, y: altoPag - 36 },
+          thickness: 1.5,
+          color: rgb(0.01, 0.41, 0.63)
+        });
+
+        let yPos = altoPag - 55;
+        const altoFila = 18;
+
+        loteFilas.forEach((fila, filaIdx) => {
+          const esEncabezado = (p === 0 && filaIdx === 0);
+
+          // Fondo de fila: azul oscuro para encabezado, cebra para datos
+          if (esEncabezado) {
+            pagina.drawRectangle({
+              x: margenX,
+              y: yPos - 3,
+              width: anchoUtil,
+              height: altoFila,
+              color: rgb(0.06, 0.09, 0.16) // #0f172a
+            });
+          } else if (filaIdx % 2 === 1) {
+            pagina.drawRectangle({
+              x: margenX,
+              y: yPos - 3,
+              width: anchoUtil,
+              height: altoFila,
+              color: rgb(0.97, 0.98, 0.99) // #f8fafc
+            });
+          }
+
+          // Dibujar celdas del bloque
+          for (let c = colInicio; c < colFin; c++) {
+            const valorRaw = fila[c] !== undefined ? String(fila[c]) : '';
+            const celdaLimpia = sanitizarParaPdfLib(valorRaw);
+            const xCol = margenX + ((c - colInicio) * anchoCol);
+
+            // Borde de celda
+            pagina.drawRectangle({
+              x: xCol,
+              y: yPos - 3,
+              width: anchoCol,
+              height: altoFila,
+              borderWidth: 0.5,
+              borderColor: rgb(0.8, 0.83, 0.88),
+              color: undefined
+            });
+
+            // Texto de celda
+            if (celdaLimpia) {
+              const maxChars = Math.max(4, Math.floor(anchoCol / 5.2));
+              const textoCortado = celdaLimpia.length > maxChars
+                ? celdaLimpia.substring(0, maxChars - 1) + '…'
+                : celdaLimpia;
+
+              pagina.drawText(textoCortado, {
+                x: xCol + 4,
+                y: yPos + 2,
+                size: esEncabezado ? 7.5 : 7,
+                font: esEncabezado ? fontBold : fontRegular,
+                color: esEncabezado ? rgb(1, 1, 1) : rgb(0.12, 0.16, 0.23)
+              });
+            }
+          }
+
+          yPos -= altoFila;
+        });
+
+        // Pie de página
+        pagina.drawText(sanitizarParaPdfLib(`EncoderGoti • Hoja: ${nombreHoja} • Pág. ${p + 1}/${totalPaginasFila}`), {
+          x: margenX,
+          y: 15,
+          size: 7.5,
+          font: fontRegular,
+          color: rgb(0.4, 0.45, 0.5)
+        });
+      }
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  fs.writeFileSync(rutaSalidaPdf, pdfBytes);
+  return { rutaArchivo: rutaSalidaPdf, nombreArchivo: path.basename(rutaSalidaPdf) };
+}
+
+/**
  * 2. Convierte a PDF el libro de Excel completo o las hojas seleccionadas con fidelidad total.
  * Preserva el 100% de las columnas y filas sin truncar texto.
  */
@@ -81,16 +241,7 @@ export async function convertirExcelConHojasSeleccionadas({
 
   const procesarTodas = hojasAProcesar.length === todasLasHojas.length;
 
-  // 0. Motor Supremo Cloud (iLovePDF API Oficial - Fidelidad 100% idéntica para Excel)
-  if (procesarTodas && CONFIGURACION.ILOVEPDF?.PUBLIC_KEY && CONFIGURACION.ILOVEPDF?.SECRET_KEY) {
-    try {
-      return await convertirConILovePdf({ rutaArchivo: rutaExcel, rutaSalidaPdf: rutaFinalPdf });
-    } catch (errIlove) {
-      console.warn('[Excel] iLovePDF API falló o agotó cuota, probando motor alternativo:', errIlove.message);
-    }
-  }
-
-  // 1. Motor Primario (Windows): Automatización COM de Microsoft Excel oficial (Fidelidad 1:1)
+  // 1. Motor Windows: Si Microsoft Excel COM está disponible, usarlo
   if (process.platform === 'win32' && procesarTodas) {
     try {
       const scriptPs = `
@@ -115,15 +266,14 @@ export async function convertirExcelConHojasSeleccionadas({
         };
       }
     } catch (errCom) {
-      console.warn('[Excel] Automatización COM de Excel no disponible, probando motor alternativo:', errCom.message);
+      console.warn('[Excel] Automatización COM de Excel no disponible, usando motor nativo:', errCom.message);
     }
   }
 
-  // 2. Motor Primario (Linux/Docker): LibreOffice Headless (para todo el libro)
+  // 2. Motor Linux/Docker: Si LibreOffice está disponible en el sistema, probarlo
   if (procesarTodas) {
     const binarioLo = await obtenerBinarioLibreOffice();
     if (binarioLo) {
-      // Directorio de perfil temporal único para evitar conflictos en entornos sin $HOME (Docker/Render)
       const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
       try {
         const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
@@ -154,165 +304,17 @@ export async function convertirExcelConHojasSeleccionadas({
           };
         }
       } catch (errLo) {
-        console.warn('[Excel] LibreOffice falló, pasando a motor HTML tabular:', errLo.message);
+        console.warn('[Excel] LibreOffice no disponible o falló, usando motor nativo autónomo:', errLo.message);
       } finally {
         try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
       }
     }
   }
 
-  // 3. Motor Secundario: Generación HTML Tabular Completa (100% de columnas y filas) + Chromium
-  let contenidoHojasHtml = '';
-
-  for (const nombreHoja of hojasAProcesar) {
-    const hoja = libro.Sheets[nombreHoja];
-    if (!hoja) continue;
-
-    // Convertir la hoja entera a tabla HTML con SheetJS
-    const tablaHtml = XLSX.utils.sheet_to_html(hoja);
-    const tablaLimpia = tablaHtml
-      .replace(/<!DOCTYPE[^>]*>/i, '')
-      .replace(/<\/?html[^>]*>/gi, '')
-      .replace(/<\/?head[^>]*>/gi, '')
-      .replace(/<\/?body[^>]*>/gi, '');
-
-    contenidoHojasHtml += `
-      <div class="sheet-container">
-        <h2 class="sheet-title">Hoja: ${nombreHoja}</h2>
-        ${tablaLimpia}
-      </div>
-    `;
-  }
-
-  const htmlDocumento = `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="utf-8">
-      <title>${nombreBase}</title>
-      <style>
-        @page {
-          size: A4 landscape;
-          margin: 10mm 10mm 10mm 10mm;
-        }
-        * { box-sizing: border-box; }
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Calibri, Arial, sans-serif;
-          margin: 0;
-          padding: 0;
-          color: #1e293b;
-          background: #ffffff;
-        }
-        .sheet-container {
-          page-break-after: always;
-          margin-bottom: 25px;
-        }
-        .sheet-container:last-child {
-          page-break-after: auto;
-        }
-        .sheet-title {
-          font-size: 13pt;
-          font-weight: 700;
-          color: #0369a1;
-          margin-top: 0;
-          margin-bottom: 10px;
-          border-bottom: 2px solid #0284c7;
-          padding-bottom: 4px;
-        }
-        table {
-          border-collapse: collapse;
-          width: 100%;
-          font-size: 7pt;
-          table-layout: auto;
-          word-break: break-word;
-        }
-        th, td {
-          border: 1px solid #cbd5e1;
-          padding: 3px 5px;
-          text-align: left;
-          vertical-align: middle;
-        }
-        tr:nth-child(even) {
-          background-color: #f8fafc;
-        }
-        tr:first-child td {
-          background-color: #e2e8f0;
-          font-weight: bold;
-          color: #0f172a;
-        }
-      </style>
-    </head>
-    <body>
-      ${contenidoHojasHtml}
-    </body>
-    </html>
-  `;
-
-  const exitoNav = await renderizarHtmlConNavegador({
-    html: htmlDocumento,
+  // 3. Motor Nativo Autónomo (100% JavaScript, fidelidad total con paginación horizontal y estilos profesionales)
+  return await renderizarExcelNativoConPdfLib({
+    rutaExcel,
     rutaSalidaPdf: rutaFinalPdf,
-    landscape: true
+    hojasAProcesar
   });
-
-  if (exitoNav) {
-    return {
-      rutaArchivo: rutaFinalPdf,
-      nombreArchivo: `${nombreBase}_converted.pdf`
-    };
-  }
-
-  // 4. Fallback con pdf-lib tabular horizontal
-  const pdfDoc = await PDFDocument.create();
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-  for (const nombreHoja of hojasAProcesar) {
-    const hoja = libro.Sheets[nombreHoja];
-    const filas = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: '' });
-    if (filas.length === 0) continue;
-
-    const filasPorPagina = 30;
-    for (let i = 0; i < filas.length; i += filasPorPagina) {
-      const loteFilas = filas.slice(i, i + filasPorPagina);
-      // Landscape A4 (841.89 x 595.28) para permitir más columnas
-      const pagina = pdfDoc.addPage([841.89, 595.28]);
-      const { height } = pagina.getSize();
-
-      pagina.drawText(`Hoja: ${nombreHoja}`, {
-        x: 35,
-        y: height - 35,
-        size: 12,
-        font: fontBold,
-        color: rgb(0.01, 0.41, 0.63),
-      });
-
-      let yPos = height - 55;
-
-      loteFilas.forEach((fila, filaIdx) => {
-        const esEncabezado = (i === 0 && filaIdx === 0);
-        const colWidth = 55;
-
-        fila.slice(0, 14).forEach((celda, colIdx) => {
-          const texto = String(celda).substring(0, 18);
-          pagina.drawText(texto, {
-            x: 35 + (colIdx * colWidth),
-            y: yPos,
-            size: 7,
-            font: esEncabezado ? fontBold : fontRegular,
-            color: esEncabezado ? rgb(0.1, 0.2, 0.4) : rgb(0.2, 0.2, 0.2),
-          });
-        });
-
-        yPos -= 16;
-      });
-    }
-  }
-
-  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
-  fs.writeFileSync(rutaFinalPdf, pdfBytes);
-
-  return {
-    rutaArchivo: rutaFinalPdf,
-    nombreArchivo: `${nombreBase}_converted.pdf`
-  };
 }
