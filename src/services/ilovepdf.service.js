@@ -153,3 +153,4 @@ export async function convertirConILovePdf({ rutaArchivo, rutaSalidaPdf = null }
     nombreArchivo: `${nombreBase}_converted.pdf`
   };
 }
+
