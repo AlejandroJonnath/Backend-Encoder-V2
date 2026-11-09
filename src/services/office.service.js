@@ -218,28 +218,46 @@ export async function renderizarHtmlConNavegador({ html, rutaSalidaPdf, landscap
   try {
     await fs.promises.writeFile(rutaHtmlTemp, html, 'utf-8');
 
-    // 1. Binario Chromium directo (ultrarrápido y sin problemas de websocket o perfiles ocupados)
+    // 1. Binario Chromium directo del sistema
     const binarioNav = await obtenerBinarioNavegador();
     if (binarioNav) {
+      const chromiumProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-prof-'));
       try {
         const flagLandscape = landscape ? '--print-to-pdf-landscape' : '';
-        const cmd = `"${binarioNav}" --headless --no-sandbox --disable-gpu --disable-dev-shm-usage ${flagLandscape} --print-to-pdf="${rutaSalidaPdf}" "${rutaHtmlTemp}"`;
-        await execPromesa(cmd, { timeout: 45000 });
+        const flagHeadless = process.platform === 'win32' ? '--headless' : '--headless=new';
+        const cmd = `"${binarioNav}" ${flagHeadless} --no-sandbox --disable-setuid-sandbox --disable-gpu --disable-dev-shm-usage --single-process --no-zygote --user-data-dir="${chromiumProfile}" ${flagLandscape} --print-to-pdf="${rutaSalidaPdf}" "${rutaHtmlTemp}"`;
+        await execPromesa(cmd, {
+          timeout: 45000,
+          env: { ...process.env, HOME: '/tmp', DISPLAY: '' }
+        });
 
         if (fs.existsSync(rutaSalidaPdf) && fs.statSync(rutaSalidaPdf).size > 0) {
           return true;
         }
       } catch (errCmd) {
+        // Reintentar con --headless estándar si --headless=new no fue reconocido
+        try {
+          const flagLandscape = landscape ? '--print-to-pdf-landscape' : '';
+          const cmdFallback = `"${binarioNav}" --headless --no-sandbox --disable-setuid-sandbox --disable-gpu --disable-dev-shm-usage --single-process --no-zygote --user-data-dir="${chromiumProfile}" ${flagLandscape} --print-to-pdf="${rutaSalidaPdf}" "${rutaHtmlTemp}"`;
+          await execPromesa(cmdFallback, {
+            timeout: 45000,
+            env: { ...process.env, HOME: '/tmp', DISPLAY: '' }
+          });
+          if (fs.existsSync(rutaSalidaPdf) && fs.statSync(rutaSalidaPdf).size > 0) {
+            return true;
+          }
+        } catch (_) {}
         console.warn('[HTML->PDF] Binario de navegador falló, probando Puppeteer:', errCmd.message);
+      } finally {
+        try { fs.rmSync(chromiumProfile, { recursive: true, force: true }); } catch (_) {}
       }
     }
 
-    // 2. Puppeteer con directorio de perfil único aislado
+    // 2. Puppeteer con perfil aislado único y modo single-process seguro para Render (512MB RAM)
     try {
       const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'puppeteer-job-'));
       let browser;
       try {
-        // En Linux/Docker usar el ejecutable del sistema (PUPPETEER_EXECUTABLE_PATH o /usr/bin/chromium)
         const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
           || (process.platform !== 'win32' ? (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : fs.existsSync('/usr/bin/chromium-browser') ? '/usr/bin/chromium-browser' : undefined) : undefined);
 
@@ -247,7 +265,14 @@ export async function renderizarHtmlConNavegador({ html, rutaSalidaPdf, landscap
           headless: true,
           userDataDir,
           executablePath,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process',
+            '--no-zygote'
+          ]
         });
         const page = await browser.newPage();
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -321,21 +346,14 @@ export async function convertirImagenAPdf(rutaImagen) {
 }
 
 /**
- * Convierte archivos de texto plano (.txt) a PDF con paginación, ajuste de línea y márgenes limpios
+ * Genera un PDF estructurado a partir de un arreglo de líneas de texto limpio
  */
-export async function convertirTextoPlanoAPdf(rutaTexto) {
-  const contenido = await fs.promises.readFile(rutaTexto, 'utf-8');
-  const dirSalida = path.dirname(rutaTexto);
-  const nombreBase = path.basename(rutaTexto, path.extname(rutaTexto));
-  const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
-
+export async function generarPdfDesdeLineasTexto(lineasBrutas, rutaFinalPdf, nombreTitulo = 'DOCUMENTO') {
   const pdfDoc = await PDFDocument.create();
   const fontCourier = await pdfDoc.embedFont(StandardFonts.Courier);
   const fontCourierBold = await pdfDoc.embedFont(StandardFonts.CourierBold);
 
-  const lineasBrutas = contenido.split(/\r?\n/);
   const lineasFormateadas = [];
-
   for (const l of lineasBrutas) {
     if (!l.trim()) {
       lineasFormateadas.push('');
@@ -355,7 +373,7 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
     const lote = lineasFormateadas.slice(i, i + lineasPorPagina);
 
     // Encabezado
-    pagina.drawText(sanitizarParaPdfLib(nombreBase.toUpperCase()), {
+    pagina.drawText(sanitizarParaPdfLib(nombreTitulo.toUpperCase()), {
       x: 45,
       y: height - 35,
       size: 8,
@@ -396,8 +414,115 @@ export async function convertirTextoPlanoAPdf(rutaTexto) {
 
   return {
     rutaArchivo: rutaFinalPdf,
+    nombreArchivo: path.basename(rutaFinalPdf)
+  };
+}
+
+/**
+ * Genera diapositivas apaisadas vectoriales directamente con pdf-lib (fallback PPTX infalible)
+ */
+export async function generarPdfDiapositivasPdfLib(diapositivas, rutaFinalPdf, nombreBase) {
+  const pdfDoc = await PDFDocument.create();
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  for (const s of diapositivas) {
+    // A4 Landscape (841.89 x 595.28)
+    const pagina = pdfDoc.addPage([841.89, 595.28]);
+    const { width, height } = pagina.getSize();
+
+    // Encabezado
+    pagina.drawText(sanitizarParaPdfLib(`Diapositiva ${s.numero} de ${s.total}`), {
+      x: 50,
+      y: height - 45,
+      size: 9,
+      font: fontRegular,
+      color: rgb(0.4, 0.45, 0.5)
+    });
+
+    const tituloLimpio = sanitizarParaPdfLib(s.titulo || `Diapositiva ${s.numero}`);
+    pagina.drawText(tituloLimpio, {
+      x: 50,
+      y: height - 70,
+      size: 18,
+      font: fontBold,
+      color: rgb(0.08, 0.12, 0.2)
+    });
+
+    pagina.drawLine({
+      start: { x: 50, y: height - 85 },
+      end: { x: width - 50, y: height - 85 },
+      color: rgb(0.85, 0.88, 0.92),
+      thickness: 1.2
+    });
+
+    // Puntos
+    let yPos = height - 115;
+    const maxPuntos = s.puntos ? s.puntos.slice(0, 15) : [];
+    for (const p of maxPuntos) {
+      if (yPos < 70) break;
+      const textoLimpio = sanitizarParaPdfLib(p);
+      const envueltas = envolverTexto(textoLimpio, 85);
+
+      envueltas.forEach((linea, idxL) => {
+        if (yPos < 70) return;
+        if (idxL === 0) {
+          pagina.drawText('•', {
+            x: 55,
+            y: yPos,
+            size: 12,
+            font: fontBold,
+            color: rgb(0.01, 0.45, 0.75)
+          });
+        }
+        pagina.drawText(linea, {
+          x: 75,
+          y: yPos,
+          size: 11,
+          font: fontRegular,
+          color: rgb(0.15, 0.2, 0.25)
+        });
+        yPos -= 18;
+      });
+      yPos -= 6;
+    }
+
+    // Pie de página
+    pagina.drawText('EncoderGoti', {
+      x: 50,
+      y: 30,
+      size: 8,
+      font: fontRegular,
+      color: rgb(0.5, 0.55, 0.6)
+    });
+    pagina.drawText(`Página ${s.numero}`, {
+      x: width - 90,
+      y: 30,
+      size: 8,
+      font: fontRegular,
+      color: rgb(0.5, 0.55, 0.6)
+    });
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  await fs.promises.writeFile(rutaFinalPdf, pdfBytes);
+
+  return {
+    rutaArchivo: rutaFinalPdf,
     nombreArchivo: `${nombreBase}_converted.pdf`
   };
+}
+
+/**
+ * Convierte archivos de texto plano (.txt) a PDF con paginación, ajuste de línea y márgenes limpios
+ */
+export async function convertirTextoPlanoAPdf(rutaTexto) {
+  const contenido = await fs.promises.readFile(rutaTexto, 'utf-8');
+  const dirSalida = path.dirname(rutaTexto);
+  const nombreBase = path.basename(rutaTexto, path.extname(rutaTexto));
+  const rutaFinalPdf = path.join(dirSalida, `${nombreBase}_converted.pdf`);
+  const lineasBrutas = contenido.split(/\r?\n/);
+  return await generarPdfDesdeLineasTexto(lineasBrutas, rutaFinalPdf, nombreBase);
 }
 
 /**
@@ -447,9 +572,23 @@ export async function convertirWordAPdf(rutaDocx) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
     try {
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = `"${binarioLo}" --headless --norestore --nofirststartwizard -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
-      await execPromesa(comandoLo, { timeout: 90000 });
-      const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
+      await execPromesa(comandoLo, {
+        timeout: 90000,
+        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'gen', DISPLAY: '' }
+      });
+
+      let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
+        try {
+          const archivos = fs.readdirSync(dirSalida);
+          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
+          if (coincide) {
+            archivoGenerado = path.join(dirSalida, coincide);
+          }
+        } catch (_) {}
+      }
+
       if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
           fs.renameSync(archivoGenerado, rutaFinalPdf);
@@ -545,8 +684,12 @@ export async function convertirWordAPdf(rutaDocx) {
     };
   }
 
-  // Fallback seguro con pdf-lib
-  return await convertirTextoPlanoAPdf(rutaDocx);
+  // Fallback seguro con pdf-lib usando el texto estructurado extraído por Mammoth
+  const raw = await mammoth.extractRawText({ path: rutaDocx }).catch(() => null);
+  const lineasFallback = raw?.value
+    ? raw.value.split(/\r?\n/).filter(l => l.trim())
+    : ['El documento Word no contiene texto editable legible.'];
+  return await generarPdfDesdeLineasTexto(lineasFallback, rutaFinalPdf, nombreBase);
 }
 
 /**
@@ -594,9 +737,23 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
     try {
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = `"${binarioLo}" --headless --norestore --nofirststartwizard -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
-      await execPromesa(comandoLo, { timeout: 90000 });
-      const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
+      await execPromesa(comandoLo, {
+        timeout: 90000,
+        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'gen', DISPLAY: '' }
+      });
+
+      let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
+        try {
+          const archivos = fs.readdirSync(dirSalida);
+          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
+          if (coincide) {
+            archivoGenerado = path.join(dirSalida, coincide);
+          }
+        } catch (_) {}
+      }
+
       if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
           fs.renameSync(archivoGenerado, rutaFinalPdf);
@@ -854,8 +1011,8 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     };
   }
 
-  // Fallback con pdf-lib
-  return await convertirTextoPlanoAPdf(rutaPptx);
+  // Fallback seguro de diapositivas limpias en A4 Landscape con pdf-lib
+  return await generarPdfDiapositivasPdfLib(diapositivasEstructuradas, rutaFinalPdf, nombreBase);
 }
 
 /**

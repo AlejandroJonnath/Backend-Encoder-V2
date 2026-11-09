@@ -86,7 +86,11 @@ export async function procesarExcelAPdfController(req, res, next) {
 
   } catch (err) {
 
-    next(err);
+    if (err instanceof AppError) {
+      next(err);
+    } else {
+      next(new AppError(`No se pudo procesar la hoja de Excel a PDF: ${err.message}`, 500));
+    }
 
   } finally {
     // Eliminar el archivo Excel temporal de origen
@@ -127,7 +131,11 @@ export async function convertirWordController(req, res, next) {
 
   } catch (err) {
 
-    next(err);
+    if (err instanceof AppError) {
+      next(err);
+    } else {
+      next(new AppError(`No se pudo convertir el documento Word a PDF: ${err.message}`, 500));
+    }
 
   } finally {
     eliminarArchivoSeguro(rutaEntrada);
@@ -165,7 +173,11 @@ export async function convertirPowerPointController(req, res, next) {
     return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
 
   } catch (err) {
-    next(err);
+    if (err instanceof AppError) {
+      next(err);
+    } else {
+      next(new AppError(`No se pudo convertir la presentación PowerPoint a PDF: ${err.message}`, 500));
+    }
   } finally {
     eliminarArchivoSeguro(rutaEntrada);
   }

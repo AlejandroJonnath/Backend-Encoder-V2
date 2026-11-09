@@ -116,9 +116,23 @@ export async function convertirExcelConHojasSeleccionadas({
       const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
       try {
         const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-        const comandoLo = `"${binarioLo}" --headless --norestore --nofirststartwizard -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaExcel}"`;
-        await execPromesa(comandoLo, { timeout: 90000 });
-        const archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+        const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaExcel}"`;
+        await execPromesa(comandoLo, {
+          timeout: 90000,
+          env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'gen', DISPLAY: '' }
+        });
+
+        let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+        if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
+          try {
+            const archivos = fs.readdirSync(dirSalida);
+            const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
+            if (coincide) {
+              archivoGenerado = path.join(dirSalida, coincide);
+            }
+          } catch (_) {}
+        }
+
         if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
           if (archivoGenerado !== rutaFinalPdf) {
             fs.renameSync(archivoGenerado, rutaFinalPdf);

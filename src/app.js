@@ -9,6 +9,7 @@ import { validarVariablesEntorno } from './config/env.validator.js';
 import { iniciarLimpiadorPeriodico, detenerLimpiadorPeriodico } from './services/cleanup.service.js';
 import { iniciarServicioKeepAlive, detenerServicioKeepAlive } from './services/keepalive.service.js';
 import { obtenerBinarioGhostscript } from './services/compress.service.js';
+import { obtenerBinarioLibreOffice, obtenerBinarioNavegador } from './services/office.service.js';
 import { manejarErroresGlobales } from './middlewares/error.middleware.js';
 import rutasApi from './routes/api.routes.js';
 import { fileURLToPath } from 'url';
@@ -96,6 +97,8 @@ app.use((req, res, next) => {
 // 5. Ruta de estado del servidor
 app.get('/salud', async (req, res) => {
   const binarioGs = await obtenerBinarioGhostscript();
+  const binarioLo = await obtenerBinarioLibreOffice();
+  const binarioNav = await obtenerBinarioNavegador();
 
   res.json({
     estado: 'activo',
@@ -103,6 +106,8 @@ app.get('/salud', async (req, res) => {
     modeloIa: CONFIGURACION.GROQ.MODELO,
     limiteArchivo: '2GB',
     ghostscript: binarioGs ? `activo (${binarioGs})` : 'no detectado',
+    libreoffice: binarioLo ? `activo (${binarioLo})` : 'no detectado',
+    navegadorRender: binarioNav ? `activo (${binarioNav})` : 'no detectado',
     ttlTemporalesMin: CONFIGURACION.ARCHIVOS.TTL_MINUTOS,
     fecha: new Date().toISOString()
   });
