@@ -13,6 +13,10 @@ import { obtenerBinarioLibreOffice, obtenerBinarioNavegador } from './services/o
 import { manejarErroresGlobales } from './middlewares/error.middleware.js';
 import rutasApi from './routes/api.routes.js';
 import { fileURLToPath } from 'url';
+import util from 'util';
+import { exec } from 'child_process';
+
+const execPromesa = util.promisify(exec);
 
 // 1. Validar entorno al iniciar
 validarVariablesEntorno();
@@ -94,7 +98,39 @@ app.use((req, res, next) => {
 
 });
 
-// 5. Ruta de estado del servidor
+// 5. Ruta de estado del servidor y diagnóstico
+app.get('/diagnostico', async (req, res) => {
+  const resultados = {};
+  const comandos = {
+    whichLo: 'which libreoffice || which soffice || echo "no-lo"',
+    whichChrome: 'which chromium || which chromium-browser || which google-chrome || echo "no-chrome"',
+    findLo: 'ls -l /usr/bin/libreoffice /usr/bin/soffice 2>&1 || echo "not-found"',
+    findChrome: 'ls -l /usr/bin/chromium* 2>&1 || echo "not-found"',
+    os: 'cat /etc/os-release 2>&1 || echo "no-os"',
+    memory: 'free -m 2>&1 || echo "no-free"'
+  };
+
+  for (const [clave, cmd] of Object.entries(comandos)) {
+    try {
+      const { stdout, stderr } = await execPromesa(cmd, { timeout: 10000 });
+      resultados[clave] = (stdout || stderr || '').trim();
+    } catch (e) {
+      resultados[clave] = `ERROR: ${e.message}`;
+    }
+  }
+
+  res.json({
+    fecha: new Date().toISOString(),
+    plataforma: process.platform,
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
+      PATH: process.env.PATH
+    },
+    ...resultados
+  });
+});
+
 app.get('/salud', async (req, res) => {
   const binarioGs = await obtenerBinarioGhostscript();
   const binarioLo = await obtenerBinarioLibreOffice();
