@@ -270,41 +270,63 @@ export async function convertirExcelConHojasSeleccionadas({
     }
   }
 
-  // 2. Motor Linux/Docker: Si LibreOffice está disponible en el sistema, probarlo
-  if (procesarTodas) {
-    const binarioLo = await obtenerBinarioLibreOffice();
-    if (binarioLo) {
-      try {
-        const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --convert-to pdf --outdir "${dirSalida}" "${rutaExcel}"`;
-        const resultadoExec = await execPromesa(comandoLo, {
-          timeout: 90000,
-          env: { ...process.env, HOME: '/tmp' }
-        });
-        console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
+  // 2. Motor Linux/Docker: Si LibreOffice está disponible en el sistema, convertir con máxima fidelidad
+  const binarioLo = await obtenerBinarioLibreOffice();
+  if (binarioLo) {
+    let rutaExcelAConvertir = rutaExcel;
+    let archivoTemporalFiltrado = null;
+    const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-calc-'));
 
-        let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
-        if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
-          try {
-            const archivos = fs.readdirSync(dirSalida);
-            const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
-            if (coincide) {
-              archivoGenerado = path.join(dirSalida, coincide);
-            }
-          } catch (_) {}
-        }
-
-        if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
-          if (archivoGenerado !== rutaFinalPdf) {
-            fs.renameSync(archivoGenerado, rutaFinalPdf);
+    try {
+      if (!procesarTodas) {
+        const wbFiltrado = XLSX.utils.book_new();
+        for (const nombreHoja of hojasAProcesar) {
+          if (libro.Sheets[nombreHoja]) {
+            XLSX.utils.book_append_sheet(wbFiltrado, libro.Sheets[nombreHoja], nombreHoja);
           }
-          return {
-            rutaArchivo: rutaFinalPdf,
-            nombreArchivo: `${nombreBase}_converted.pdf`
-          };
         }
-      } catch (errLo) {
-        console.error('[Excel] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+        archivoTemporalFiltrado = path.join(dirSalida, `${nombreBase}_sel.xlsx`);
+        XLSX.writeFile(wbFiltrado, archivoTemporalFiltrado);
+        rutaExcelAConvertir = archivoTemporalFiltrado;
       }
+
+      const nombreBaseAConvertir = path.basename(rutaExcelAConvertir, path.extname(rutaExcelAConvertir));
+      const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
+      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaExcelAConvertir}"`;
+      
+      const resultadoExec = await execPromesa(comandoLo, {
+        timeout: 90000,
+        env: { ...process.env, HOME: '/tmp' }
+      });
+      console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
+
+      let archivoGenerado = path.join(dirSalida, `${nombreBaseAConvertir}.pdf`);
+      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
+        try {
+          const archivos = fs.readdirSync(dirSalida);
+          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
+          if (coincide) {
+            archivoGenerado = path.join(dirSalida, coincide);
+          }
+        } catch (_) {}
+      }
+
+      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+        if (archivoGenerado !== rutaFinalPdf) {
+          fs.renameSync(archivoGenerado, rutaFinalPdf);
+        }
+        return {
+          rutaArchivo: rutaFinalPdf,
+          nombreArchivo: `${nombreBase}_converted.pdf`
+        };
+      }
+    } catch (errLo) {
+      console.error('[Excel] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+    } finally {
+      if (archivoTemporalFiltrado && fs.existsSync(archivoTemporalFiltrado)) {
+        try { fs.unlinkSync(archivoTemporalFiltrado); } catch (_) {}
+      }
+      try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }
 

@@ -485,8 +485,10 @@ export async function convertirWordAPdf(rutaDocx) {
   // 2. Motor Linux/Docker: LibreOffice Headless (si está instalado en el sistema)
   const binarioLo = await obtenerBinarioLibreOffice();
   if (binarioLo) {
+    const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-word-'));
     try {
-      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
+      const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
+      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
       const resultadoExec = await execPromesa(comandoLo, {
         timeout: 90000,
         env: { ...process.env, HOME: '/tmp' }
@@ -515,6 +517,8 @@ export async function convertirWordAPdf(rutaDocx) {
       }
     } catch (errLo) {
       console.error('[Word] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+    } finally {
+      try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }
 
@@ -736,6 +740,62 @@ export async function renderizarPowerPointNativoConPdfLib({ rutaPptx, rutaSalida
 }
 
 /**
+ * Optimiza presentaciones PowerPoint pesadas (>2.5MB) comprimiendo imágenes PNG internas
+ * a paleta de 8 bits para evitar consumo excesivo de memoria en Linux/Render.
+ */
+async function optimizarPresentacionParaLibreOffice(rutaPptx) {
+  try {
+    const stats = await fs.promises.stat(rutaPptx);
+    if (stats.size < 2.5 * 1024 * 1024) {
+      return { ruta: rutaPptx, esTemporal: false };
+    }
+
+    const buf = await fs.promises.readFile(rutaPptx);
+    const zip = await JSZip.loadAsync(buf);
+    let modificado = false;
+
+    for (const [nombre, archivo] of Object.entries(zip.files)) {
+      if (nombre.startsWith('ppt/media/')) {
+        const ext = path.extname(nombre).toLowerCase();
+        if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
+          const imgBuf = await archivo.async('nodebuffer');
+          if (imgBuf.length > 250 * 1024) {
+            try {
+              const optimizado = await sharp(imgBuf)
+                .resize({ width: 1400, height: 1050, fit: 'inside', withoutEnlargement: true })
+                .png({ palette: true, quality: 80, compressionLevel: 8 })
+                .toBuffer();
+
+              if (optimizado.length < imgBuf.length) {
+                zip.file(nombre, optimizado);
+                modificado = true;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
+    if (modificado) {
+      const nuevoBuf = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 }
+      });
+      const dir = path.dirname(rutaPptx);
+      const base = path.basename(rutaPptx, path.extname(rutaPptx));
+      const rutaOpt = path.join(dir, `${base}_opt.pptx`);
+      await fs.promises.writeFile(rutaOpt, nuevoBuf);
+      console.log(`[PowerPoint] PPTX optimizado para memoria de ${(stats.size / 1024 / 1024).toFixed(1)}MB a ${(nuevoBuf.length / 1024 / 1024).toFixed(1)}MB`);
+      return { ruta: rutaOpt, esTemporal: true };
+    }
+  } catch (errOpt) {
+    console.warn('[PowerPoint] Optimización previa no aplicada:', errOpt.message);
+  }
+  return { ruta: rutaPptx, esTemporal: false };
+}
+
+/**
  * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF con fidelidad exacta al original
  */
 export async function convertirPowerPointAPdf(rutaPptx) {
@@ -776,19 +836,27 @@ export async function convertirPowerPointAPdf(rutaPptx) {
   // 2. Motor Linux/Docker: LibreOffice Headless (si está instalado en el sistema)
   const binarioLo = await obtenerBinarioLibreOffice();
   if (binarioLo) {
+    const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-ppt-'));
+    let optInfo = null;
+
     try {
-      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --convert-to pdf --outdir "${dirSalida}" "${rutaPptx}"`;
+      optInfo = await optimizarPresentacionParaLibreOffice(rutaPptx);
+      const pptxAConvertir = optInfo.ruta;
+      const nombreBaseAConvertir = path.basename(pptxAConvertir, path.extname(pptxAConvertir));
+      const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
+
+      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${pptxAConvertir}"`;
       const resultadoExec = await execPromesa(comandoLo, {
         timeout: 90000,
         env: { ...process.env, HOME: '/tmp' }
       });
       console.log('[PowerPoint] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
-      let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
+      let archivoGenerado = path.join(dirSalida, `${nombreBaseAConvertir}.pdf`);
       if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
         try {
           const archivos = fs.readdirSync(dirSalida);
-          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
+          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
           if (coincide) {
             archivoGenerado = path.join(dirSalida, coincide);
           }
@@ -806,6 +874,11 @@ export async function convertirPowerPointAPdf(rutaPptx) {
       }
     } catch (errLo) {
       console.error('[PowerPoint] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+    } finally {
+      if (optInfo && optInfo.esTemporal && fs.existsSync(optInfo.ruta)) {
+        try { fs.unlinkSync(optInfo.ruta); } catch (_) {}
+      }
+      try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }
 
