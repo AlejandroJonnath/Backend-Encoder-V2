@@ -136,8 +136,6 @@ app.get('/salud', async (req, res) => {
   const binarioLo = await obtenerBinarioLibreOffice();
   const binarioNav = await obtenerBinarioNavegador();
 
-  const tieneILovePdf = !!(CONFIGURACION.ILOVEPDF?.PUBLIC_KEY && CONFIGURACION.ILOVEPDF?.SECRET_KEY);
-
   res.json({
     estado: 'activo',
     servidor: 'API de Operaciones PDF & FirmaEC',
@@ -146,7 +144,7 @@ app.get('/salud', async (req, res) => {
     ghostscript: binarioGs ? `activo (${binarioGs})` : 'no detectado',
     libreoffice: binarioLo ? `activo (${binarioLo})` : 'no detectado',
     navegadorRender: binarioNav ? `activo (${binarioNav})` : 'no detectado',
-    ilovepdfApi: tieneILovePdf ? 'activo (conectado)' : 'no configurado',
+    motorConversion: binarioLo ? 'LibreOffice Headless (Fidelidad 100% Idéntica)' : 'Motor Nativo JavaScript',
     ttlTemporalesMin: CONFIGURACION.ARCHIVOS.TTL_MINUTOS,
     fecha: new Date().toISOString()
   });

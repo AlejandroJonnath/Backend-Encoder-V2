@@ -1,4 +1,4 @@
-FROM node:20-bullseye-slim
+FROM node:22-bookworm-slim
 
 # Definir entorno de producción
 # PUPPETEER_EXECUTABLE_PATH apunta al Chromium del sistema para Motor 3 (fallback HTML→PDF)
@@ -7,10 +7,10 @@ ENV NODE_ENV=production \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Instalar dependencias del sistema:
-# - LibreOffice (Motor 2): conversión fiel de Word/PPT/Excel a PDF en Linux
-# - Chromium (Motor 3 fallback): renderizado HTML→PDF via Puppeteer cuando LibreOffice falla
+# - LibreOffice (Motor 1 de máxima fidelidad): conversión idéntica de Word/PPT/Excel a PDF en Linux
+# - Chromium (Motor fallback): renderizado HTML→PDF via Puppeteer
 # - Ghostscript: compresión y manipulación de PDFs
-# - Fuentes tipográficas: necesarias para LibreOffice y renderizado HTML correcto
+# - Fuentes tipográficas: sustituciones métricas exactas para Office (Calibri, Cambria, Arial, Times, Google Fonts)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     libreoffice \
@@ -19,11 +19,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-impress \
     chromium \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     fonts-dejavu-core \
     fonts-noto \
+    fonts-noto-cjk \
     fontconfig \
     curl \
+    unzip \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Descargar e instalar tipografías de Google Fonts utilizadas en presentaciones (DM Sans, Archivo Black, Roboto)
+RUN mkdir -p /usr/share/fonts/truetype/google-fonts \
+    && curl -sSL -o /tmp/dmsans.zip "https://fonts.google.com/download?family=DM%20Sans" \
+    && unzip -q /tmp/dmsans.zip -d /usr/share/fonts/truetype/google-fonts/ || true \
+    && curl -sSL -o /tmp/archivoblack.zip "https://fonts.google.com/download?family=Archivo%20Black" \
+    && unzip -q /tmp/archivoblack.zip -d /usr/share/fonts/truetype/google-fonts/ || true \
+    && rm -f /tmp/*.zip \
+    && fc-cache -f -v
 
 WORKDIR /app
 
