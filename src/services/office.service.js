@@ -491,7 +491,7 @@ export async function convertirWordAPdf(rutaDocx) {
       const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
       const resultadoExec = await execPromesa(comandoLo, {
         timeout: 90000,
-        env: { ...process.env, HOME: '/tmp' }
+        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
       });
       console.log('[Word] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
@@ -848,7 +848,7 @@ export async function convertirPowerPointAPdf(rutaPptx) {
       const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${pptxAConvertir}"`;
       const resultadoExec = await execPromesa(comandoLo, {
         timeout: 90000,
-        env: { ...process.env, HOME: '/tmp' }
+        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
       });
       console.log('[PowerPoint] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import * as XLSX from 'xlsx';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { exec } from 'child_process';
@@ -296,7 +297,7 @@ export async function convertirExcelConHojasSeleccionadas({
       
       const resultadoExec = await execPromesa(comandoLo, {
         timeout: 90000,
-        env: { ...process.env, HOME: '/tmp' }
+        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
       });
       console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
