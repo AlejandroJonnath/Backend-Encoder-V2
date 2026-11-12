@@ -274,14 +274,13 @@ export async function convertirExcelConHojasSeleccionadas({
   if (procesarTodas) {
     const binarioLo = await obtenerBinarioLibreOffice();
     if (binarioLo) {
-      const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-profile-'));
       try {
-        const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-        const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaExcel}"`;
-        await execPromesa(comandoLo, {
+        const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --convert-to pdf --outdir "${dirSalida}" "${rutaExcel}"`;
+        const resultadoExec = await execPromesa(comandoLo, {
           timeout: 90000,
-          env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'gen', DISPLAY: '' }
+          env: { ...process.env, HOME: '/tmp' }
         });
+        console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
         let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
         if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
@@ -304,9 +303,7 @@ export async function convertirExcelConHojasSeleccionadas({
           };
         }
       } catch (errLo) {
-        console.warn('[Excel] LibreOffice no disponible o falló, usando motor nativo autónomo:', errLo.message);
-      } finally {
-        try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
+        console.error('[Excel] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
       }
     }
   }
