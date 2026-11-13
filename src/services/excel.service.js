@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { exec } from 'child_process';
 import util from 'util';
-import { obtenerBinarioLibreOffice } from './office.service.js';
+import { obtenerBinarioLibreOffice, construirComandoLibreOffice } from './office.service.js';
 
 const execPromesa = util.promisify(exec);
 
@@ -293,11 +293,11 @@ export async function convertirExcelConHojasSeleccionadas({
 
       const nombreBaseAConvertir = path.basename(rutaExcelAConvertir, path.extname(rutaExcelAConvertir));
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaExcelAConvertir}"`;
+      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaExcelAConvertir);
       
       const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 90000,
-        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
+        timeout: 60000,
+        env: { ...process.env, HOME: '/tmp' }
       });
       console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 

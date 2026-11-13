@@ -108,6 +108,36 @@ export async function obtenerBinarioLibreOffice() {
   return null;
 }
 
+let tieneXvfbCache = undefined;
+
+/**
+ * Detecta si xvfb-run está instalado (necesario en Linux/Docker para virtual display de LibreOffice)
+ */
+export async function tieneXvfb() {
+  if (tieneXvfbCache !== undefined) return tieneXvfbCache;
+  if (process.platform === 'win32') {
+    tieneXvfbCache = false;
+    return false;
+  }
+  try {
+    await execPromesa('which xvfb-run');
+    tieneXvfbCache = true;
+    return true;
+  } catch (_) {
+    tieneXvfbCache = false;
+    return false;
+  }
+}
+
+/**
+ * Construye el comando de conversión de LibreOffice utilizando xvfb-run si está disponible
+ */
+export async function construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaArchivo) {
+  const usaXvfb = await tieneXvfb();
+  const prefijo = usaXvfb ? 'xvfb-run -a -s "-screen 0 1024x768x24" ' : '';
+  return `${prefijo}"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaArchivo}"`;
+}
+
 /**
  * Detecta un navegador basado en Chromium (Google Chrome o Microsoft Edge)
  */
@@ -488,10 +518,10 @@ export async function convertirWordAPdf(rutaDocx) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-word-'));
     try {
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaDocx}"`;
+      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaDocx);
       const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 90000,
-        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
+        timeout: 60000,
+        env: { ...process.env, HOME: '/tmp' }
       });
       console.log('[Word] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
@@ -739,61 +769,6 @@ export async function renderizarPowerPointNativoConPdfLib({ rutaPptx, rutaSalida
   };
 }
 
-/**
- * Optimiza presentaciones PowerPoint pesadas (>2.5MB) comprimiendo imágenes PNG internas
- * a paleta de 8 bits para evitar consumo excesivo de memoria en Linux/Render.
- */
-async function optimizarPresentacionParaLibreOffice(rutaPptx) {
-  try {
-    const stats = await fs.promises.stat(rutaPptx);
-    if (stats.size < 2.5 * 1024 * 1024) {
-      return { ruta: rutaPptx, esTemporal: false };
-    }
-
-    const buf = await fs.promises.readFile(rutaPptx);
-    const zip = await JSZip.loadAsync(buf);
-    let modificado = false;
-
-    for (const [nombre, archivo] of Object.entries(zip.files)) {
-      if (nombre.startsWith('ppt/media/')) {
-        const ext = path.extname(nombre).toLowerCase();
-        if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
-          const imgBuf = await archivo.async('nodebuffer');
-          if (imgBuf.length > 250 * 1024) {
-            try {
-              const optimizado = await sharp(imgBuf)
-                .resize({ width: 1400, height: 1050, fit: 'inside', withoutEnlargement: true })
-                .png({ palette: true, quality: 80, compressionLevel: 8 })
-                .toBuffer();
-
-              if (optimizado.length < imgBuf.length) {
-                zip.file(nombre, optimizado);
-                modificado = true;
-              }
-            } catch (_) {}
-          }
-        }
-      }
-    }
-
-    if (modificado) {
-      const nuevoBuf = await zip.generateAsync({
-        type: 'nodebuffer',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 }
-      });
-      const dir = path.dirname(rutaPptx);
-      const base = path.basename(rutaPptx, path.extname(rutaPptx));
-      const rutaOpt = path.join(dir, `${base}_opt.pptx`);
-      await fs.promises.writeFile(rutaOpt, nuevoBuf);
-      console.log(`[PowerPoint] PPTX optimizado para memoria de ${(stats.size / 1024 / 1024).toFixed(1)}MB a ${(nuevoBuf.length / 1024 / 1024).toFixed(1)}MB`);
-      return { ruta: rutaOpt, esTemporal: true };
-    }
-  } catch (errOpt) {
-    console.warn('[PowerPoint] Optimización previa no aplicada:', errOpt.message);
-  }
-  return { ruta: rutaPptx, esTemporal: false };
-}
 
 /**
  * Convierte presentaciones PowerPoint (.pptx, .ppt) a PDF con fidelidad exacta al original
@@ -837,18 +812,15 @@ export async function convertirPowerPointAPdf(rutaPptx) {
   const binarioLo = await obtenerBinarioLibreOffice();
   if (binarioLo) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-ppt-'));
-    let optInfo = null;
 
     try {
-      optInfo = await optimizarPresentacionParaLibreOffice(rutaPptx);
-      const pptxAConvertir = optInfo.ruta;
-      const nombreBaseAConvertir = path.basename(pptxAConvertir, path.extname(pptxAConvertir));
+      const nombreBaseAConvertir = path.basename(rutaPptx, path.extname(rutaPptx));
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
 
-      const comandoLo = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${pptxAConvertir}"`;
+      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaPptx);
       const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 90000,
-        env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'headless', DISPLAY: '' }
+        timeout: 60000,
+        env: { ...process.env, HOME: '/tmp' }
       });
       console.log('[PowerPoint] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
@@ -875,9 +847,6 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     } catch (errLo) {
       console.error('[PowerPoint] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
     } finally {
-      if (optInfo && optInfo.esTemporal && fs.existsSync(optInfo.ruta)) {
-        try { fs.unlinkSync(optInfo.ruta); } catch (_) {}
-      }
       try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
   }

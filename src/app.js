@@ -103,9 +103,9 @@ app.get('/diagnostico', async (req, res) => {
   const resultados = {};
   const comandos = {
     whichLo: 'which libreoffice || which soffice || echo "no-lo"',
+    whichXvfb: 'which xvfb-run || echo "no-xvfb"',
     loVersion: 'libreoffice --version 2>&1 || echo "lo-err"',
-    testLoRaw: 'echo "test" > /tmp/diag.txt && libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag.txt 2>&1 && ls -l /tmp/diag.pdf 2>&1 || echo "lo-raw-err"',
-    testLoWithGen: 'SAL_USE_VCLPLUGIN=gen libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag.txt 2>&1 || echo "lo-gen-err"',
+    testLoXvfb: 'echo "test" > /tmp/diag.txt && xvfb-run -a -s "-screen 0 1024x768x24" libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag.txt 2>&1 && ls -lh /tmp/diag.pdf 2>&1 || echo "lo-xvfb-err"',
     whichChrome: 'which chromium || which chromium-browser || which google-chrome || echo "no-chrome"',
     findLo: 'ls -l /usr/bin/libreoffice /usr/bin/soffice 2>&1 || echo "not-found"',
     findChrome: 'ls -l /usr/bin/chromium* 2>&1 || echo "not-found"',

@@ -4,12 +4,11 @@ FROM node:22-bookworm-slim
 # PUPPETEER_EXECUTABLE_PATH apunta al Chromium del sistema para Motor 3 (fallback HTML→PDF)
 ENV NODE_ENV=production \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    SAL_USE_VCLPLUGIN=headless \
-    DISPLAY=
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Instalar dependencias del sistema:
 # - LibreOffice (Motor 1 de máxima fidelidad): conversión idéntica de Word/PPT/Excel a PDF en Linux
+# - Xvfb: virtual framebuffer para ejecución headless estable y sin errores X11
 # - Chromium (Motor fallback): renderizado HTML→PDF via Puppeteer
 # - Ghostscript: compresión y manipulación de PDFs
 # - Fuentes tipográficas: sustituciones métricas exactas para Office (Calibri, Cambria, Arial, Times, Google Fonts)
@@ -19,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
+    xvfb \
     chromium \
     fonts-liberation \
     fonts-crosextra-carlito \
@@ -65,4 +65,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:3000/salud || exit 1
 
-CMD ["node", "--max-old-space-size=512", "src/app.js"]
+CMD ["node", "--max-old-space-size=256", "src/app.js"]
