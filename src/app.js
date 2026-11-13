@@ -104,8 +104,11 @@ app.get('/diagnostico', async (req, res) => {
   const comandos = {
     whichLo: 'which libreoffice || which soffice || echo "no-lo"',
     whichXvfb: 'which xvfb-run || echo "no-xvfb"',
+    whichXauth: 'which xauth || echo "no-xauth"',
     loVersion: 'libreoffice --version 2>&1 || echo "lo-err"',
-    testLoXvfb: 'echo "test" > /tmp/diag.txt && xvfb-run -a -s "-screen 0 1024x768x24" libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag.txt 2>&1 && ls -lh /tmp/diag.pdf 2>&1 || echo "lo-xvfb-err"',
+    testLoXvfb: 'echo "test" > /tmp/diag_xvfb.txt && xvfb-run -a -s "-screen 0 1024x768x24" libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag_xvfb.txt 2>&1 && ls -lh /tmp/diag_xvfb.pdf 2>&1 || echo "lo-xvfb-err"',
+    testLoSvp: 'echo "test" > /tmp/diag_svp.txt && SAL_USE_VCLPLUGIN=svp libreoffice --headless --convert-to pdf --outdir /tmp /tmp/diag_svp.txt 2>&1 && ls -lh /tmp/diag_svp.pdf 2>&1 || echo "lo-svp-err"',
+    installedFonts: 'fc-list : family | grep -iE "dm sans|archivo|carlito|caladea|liberation" | sort -u 2>&1 || echo "no-fonts"',
     whichChrome: 'which chromium || which chromium-browser || which google-chrome || echo "no-chrome"',
     findLo: 'ls -l /usr/bin/libreoffice /usr/bin/soffice 2>&1 || echo "not-found"',
     findChrome: 'ls -l /usr/bin/chromium* 2>&1 || echo "not-found"',

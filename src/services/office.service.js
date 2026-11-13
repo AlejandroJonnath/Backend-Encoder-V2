@@ -111,7 +111,7 @@ export async function obtenerBinarioLibreOffice() {
 let tieneXvfbCache = undefined;
 
 /**
- * Detecta si xvfb-run está instalado (necesario en Linux/Docker para virtual display de LibreOffice)
+ * Detecta si xvfb-run y xauth están instalados (necesario en Linux/Docker para virtual display de LibreOffice)
  */
 export async function tieneXvfb() {
   if (tieneXvfbCache !== undefined) return tieneXvfbCache;
@@ -120,7 +120,7 @@ export async function tieneXvfb() {
     return false;
   }
   try {
-    await execPromesa('which xvfb-run');
+    await execPromesa('which xvfb-run && which xauth');
     tieneXvfbCache = true;
     return true;
   } catch (_) {
@@ -136,6 +136,66 @@ export async function construirComandoLibreOffice(binarioLo, urlPerfil, dirSalid
   const usaXvfb = await tieneXvfb();
   const prefijo = usaXvfb ? 'xvfb-run -a -s "-screen 0 1024x768x24" ' : '';
   return `${prefijo}"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaArchivo}"`;
+}
+
+/**
+ * Ejecuta la conversión de LibreOffice garantizando la máxima fidelidad:
+ * 1. Intenta primero con xvfb-run (servidor X11 virtual completo en memoria).
+ * 2. Si falla o no está disponible, intenta con el plugin SVP offscreen nativo de LibreOffice.
+ */
+export async function ejecutarLibreOfficeConFallback({ binarioLo, urlPerfil, dirSalida, rutaArchivo }) {
+  const nombreBaseAConvertir = path.basename(rutaArchivo, path.extname(rutaArchivo));
+  const rutaEsperadaPdf = path.join(dirSalida, `${nombreBaseAConvertir}.pdf`);
+
+  const usaXvfb = await tieneXvfb();
+  if (usaXvfb) {
+    try {
+      const cmdXvfb = `xvfb-run -a -s "-screen 0 1024x768x24" "${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaArchivo}"`;
+      const resXvfb = await execPromesa(cmdXvfb, {
+        timeout: 60000,
+        env: { ...process.env, HOME: '/tmp' }
+      });
+      console.log('[Office] LibreOffice (xvfb) stdout:', resXvfb.stdout, 'stderr:', resXvfb.stderr);
+
+      if (fs.existsSync(rutaEsperadaPdf) && fs.statSync(rutaEsperadaPdf).size > 0) {
+        return rutaEsperadaPdf;
+      }
+
+      const archivos = fs.readdirSync(dirSalida);
+      const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
+      if (coincide) {
+        const rutaMatch = path.join(dirSalida, coincide);
+        if (fs.statSync(rutaMatch).size > 0) return rutaMatch;
+      }
+    } catch (errXvfb) {
+      console.warn('[Office] xvfb-run falló, probando con backend SVP directo:', errXvfb.message);
+    }
+  }
+
+  // Fallback con LibreOffice directo usando backend offscreen SVP
+  try {
+    const cmdDirecto = `"${binarioLo}" --headless --invisible --nodefault --nofirststartwizard --nologo --norestore --nolockcheck -env:UserInstallation=${urlPerfil} --convert-to pdf --outdir "${dirSalida}" "${rutaArchivo}"`;
+    const resSvp = await execPromesa(cmdDirecto, {
+      timeout: 60000,
+      env: { ...process.env, HOME: '/tmp', SAL_USE_VCLPLUGIN: 'svp' }
+    });
+    console.log('[Office] LibreOffice (svp) stdout:', resSvp.stdout, 'stderr:', resSvp.stderr);
+
+    if (fs.existsSync(rutaEsperadaPdf) && fs.statSync(rutaEsperadaPdf).size > 0) {
+      return rutaEsperadaPdf;
+    }
+
+    const archivos = fs.readdirSync(dirSalida);
+    const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
+    if (coincide) {
+      const rutaMatch = path.join(dirSalida, coincide);
+      if (fs.statSync(rutaMatch).size > 0) return rutaMatch;
+    }
+  } catch (errSvp) {
+    console.error('[Office] LibreOffice (svp) también falló:', errSvp.message);
+  }
+
+  return null;
 }
 
 /**
@@ -518,25 +578,14 @@ export async function convertirWordAPdf(rutaDocx) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-word-'));
     try {
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaDocx);
-      const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 60000,
-        env: { ...process.env, HOME: '/tmp' }
+      const archivoGenerado = await ejecutarLibreOfficeConFallback({
+        binarioLo,
+        urlPerfil,
+        dirSalida,
+        rutaArchivo: rutaDocx
       });
-      console.log('[Word] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
-      let archivoGenerado = path.join(dirSalida, `${nombreBase}.pdf`);
-      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
-        try {
-          const archivos = fs.readdirSync(dirSalida);
-          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBase) || f.includes(nombreBase.slice(0, 15))));
-          if (coincide) {
-            archivoGenerado = path.join(dirSalida, coincide);
-          }
-        } catch (_) {}
-      }
-
-      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+      if (archivoGenerado && fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
           fs.renameSync(archivoGenerado, rutaFinalPdf);
         }
@@ -546,7 +595,7 @@ export async function convertirWordAPdf(rutaDocx) {
         };
       }
     } catch (errLo) {
-      console.error('[Word] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+      console.error('[Word] LibreOffice falló:', errLo.message);
     } finally {
       try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }
@@ -814,28 +863,15 @@ export async function convertirPowerPointAPdf(rutaPptx) {
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-ppt-'));
 
     try {
-      const nombreBaseAConvertir = path.basename(rutaPptx, path.extname(rutaPptx));
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-
-      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaPptx);
-      const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 60000,
-        env: { ...process.env, HOME: '/tmp' }
+      const archivoGenerado = await ejecutarLibreOfficeConFallback({
+        binarioLo,
+        urlPerfil,
+        dirSalida,
+        rutaArchivo: rutaPptx
       });
-      console.log('[PowerPoint] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
-      let archivoGenerado = path.join(dirSalida, `${nombreBaseAConvertir}.pdf`);
-      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
-        try {
-          const archivos = fs.readdirSync(dirSalida);
-          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
-          if (coincide) {
-            archivoGenerado = path.join(dirSalida, coincide);
-          }
-        } catch (_) {}
-      }
-
-      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+      if (archivoGenerado && fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
           fs.renameSync(archivoGenerado, rutaFinalPdf);
         }
@@ -845,7 +881,7 @@ export async function convertirPowerPointAPdf(rutaPptx) {
         };
       }
     } catch (errLo) {
-      console.error('[PowerPoint] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+      console.error('[PowerPoint] LibreOffice falló:', errLo.message);
     } finally {
       try { fs.rmSync(loProfile, { recursive: true, force: true }); } catch (_) {}
     }

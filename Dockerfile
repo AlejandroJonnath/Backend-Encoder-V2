@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
     libreoffice-impress \
     xvfb \
+    xauth \
     chromium \
     fonts-liberation \
     fonts-crosextra-carlito \
@@ -32,13 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Descargar e instalar tipografías de Google Fonts utilizadas en presentaciones (DM Sans, Archivo Black, Roboto)
+# Descargar e instalar tipografías de Google Fonts utilizadas en presentaciones (DM Sans, Archivo Black)
 RUN mkdir -p /usr/share/fonts/truetype/google-fonts \
-    && curl -sSL -o /tmp/dmsans.zip "https://fonts.google.com/download?family=DM%20Sans" \
-    && unzip -q /tmp/dmsans.zip -d /usr/share/fonts/truetype/google-fonts/ || true \
-    && curl -sSL -o /tmp/archivoblack.zip "https://fonts.google.com/download?family=Archivo%20Black" \
-    && unzip -q /tmp/archivoblack.zip -d /usr/share/fonts/truetype/google-fonts/ || true \
-    && rm -f /tmp/*.zip \
+    && curl -sSL -o /usr/share/fonts/truetype/google-fonts/DMSans.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/dmsans/DMSans%5Bopsz%2Cwght%5D.ttf" \
+    && curl -sSL -o /usr/share/fonts/truetype/google-fonts/DMSans-Italic.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/dmsans/DMSans-Italic%5Bopsz%2Cwght%5D.ttf" \
+    && curl -sSL -o /usr/share/fonts/truetype/google-fonts/ArchivoBlack.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/archivoblack/ArchivoBlack-Regular.ttf" \
     && fc-cache -f -v
 
 WORKDIR /app
