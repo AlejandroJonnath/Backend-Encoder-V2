@@ -14,12 +14,8 @@ export async function registrarOperacionDocumento({
   metadatos = {}
 }) {
   try {
-    if (!userId || userId === '00000000-0000-0000-0000-000000000000') {
-      return null;
-    }
-
     const { data, error } = await supabaseAdmin.from('documents').insert({
-      user_id: userId,
+      user_id: userId || null,
       original_name: nombreOriginal,
       result_name: nombreResultado,
       operation: operacion,
@@ -51,10 +47,6 @@ export async function registrarTareaIA({
   completionTokens = 0
 }) {
   try {
-    if (!userId || userId === '00000000-0000-0000-0000-000000000000') {
-      return null;
-    }
-
     const payload = {
       user_id: userId,
       task_type: taskType,

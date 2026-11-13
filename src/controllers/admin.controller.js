@@ -47,7 +47,7 @@ export async function obtenerEstadisticasUsoController(req, res, next) {
 
     // 1. Intentar consultar tabla documents de Supabase
     try {
-      const { data, error } = await supabaseAdmin.from('documents').select('operation, created_at, original_size, final_size');
+      const { data, error } = await supabaseAdmin.from('documents').select('operation, created_at, original_size_bytes, result_size_bytes');
       if (!error && data) {
         docs = data;
       }

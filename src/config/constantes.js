@@ -39,6 +39,10 @@ export const CONFIGURACION = {
 
   TIPOS_OPERACION: {
     CONVERTIR: 'convert',
+    CONVERTIR_WORD: 'convert_word',
+    CONVERTIR_EXCEL: 'convert_excel',
+    CONVERTIR_TXT: 'convert_txt',
+    CONVERTIR_IMAGEN: 'convert_image',
     FIRMAR: 'sign',
     COMPRIMIR: 'compress',
     UNIR: 'merge',

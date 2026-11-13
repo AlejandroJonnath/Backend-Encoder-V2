@@ -5,6 +5,7 @@ import { CONFIGURACION } from '../config/constantes.js';
 
 import { inspeccionarHojasExcel, convertirExcelConHojasSeleccionadas } from '../services/excel.service.js';
 import { convertirImagenAPdf, convertirTextoPlanoAPdf, convertirOfficeAPdf } from '../services/office.service.js';
+import { registrarOperacionDocumento } from '../services/audit.service.js';
 
 import { responderArchivoOJson } from '../utils/response.js';
 import { eliminarArchivoSeguro } from '../services/cleanup.service.js';
@@ -82,6 +83,15 @@ export async function procesarExcelAPdfController(req, res, next) {
 
     const resultado = await convertirExcelConHojasSeleccionadas({ rutaExcel, hojasSeleccionadas: hojasArray });
 
+    registrarOperacionDocumento({
+      userId: req.usuario?.id,
+      nombreOriginal: rutaExcel,
+      nombreResultado: resultado.nombreArchivo,
+      operacion: CONFIGURACION.TIPOS_OPERACION.CONVERTIR_EXCEL,
+      tamanioOriginal: 0,
+      tamanioResultado: 0
+    }).catch(() => {});
+
     return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
 
   } catch (err) {
@@ -127,6 +137,15 @@ export async function convertirWordController(req, res, next) {
 
     const resultado = await convertirOfficeAPdf(archivo.path);
 
+    registrarOperacionDocumento({
+      userId: req.usuario?.id,
+      nombreOriginal: archivo.originalname,
+      nombreResultado: resultado.nombreArchivo,
+      operacion: CONFIGURACION.TIPOS_OPERACION.CONVERTIR_WORD,
+      tamanioOriginal: archivo.size || 0,
+      tamanioResultado: 0
+    }).catch(() => {});
+
     return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
 
   } catch (err) {
@@ -160,6 +179,16 @@ export async function convertirTxtController(req, res, next) {
     }
 
     const resultado = await convertirTextoPlanoAPdf(archivo.path);
+
+    registrarOperacionDocumento({
+      userId: req.usuario?.id,
+      nombreOriginal: archivo.originalname,
+      nombreResultado: resultado.nombreArchivo,
+      operacion: CONFIGURACION.TIPOS_OPERACION.CONVERTIR_TXT,
+      tamanioOriginal: archivo.size || 0,
+      tamanioResultado: 0
+    }).catch(() => {});
+
     return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
   } catch (err) {
     next(err);
@@ -186,6 +215,16 @@ export async function convertirImagenController(req, res, next) {
     }
 
     const resultado = await convertirImagenAPdf(archivo.path);
+
+    registrarOperacionDocumento({
+      userId: req.usuario?.id,
+      nombreOriginal: archivo.originalname,
+      nombreResultado: resultado.nombreArchivo,
+      operacion: CONFIGURACION.TIPOS_OPERACION.CONVERTIR_IMAGEN,
+      tamanioOriginal: archivo.size || 0,
+      tamanioResultado: 0
+    }).catch(() => {});
+
     return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
   } catch (err) {
     next(err);
