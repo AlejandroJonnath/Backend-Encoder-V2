@@ -2,10 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { exec } from 'child_process';
 import util from 'util';
-import { obtenerBinarioLibreOffice, construirComandoLibreOffice } from './office.service.js';
+import { obtenerBinarioLibreOffice, construirComandoLibreOffice, ejecutarLibreOfficeConFallback } from './office.service.js';
 
 const execPromesa = util.promisify(exec);
 
@@ -279,40 +280,64 @@ export async function convertirExcelConHojasSeleccionadas({
     const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-calc-'));
 
     try {
+      // Usar JSZip sobre el archivo original para preservar el 100% de los estilos, colores, tablas y bordes
+      const zip = await JSZip.loadAsync(buffer);
+      let modificado = false;
+
+      // 1. Ocultar las hojas no seleccionadas en xl/workbook.xml
       if (!procesarTodas) {
-        const wbFiltrado = XLSX.utils.book_new();
-        for (const nombreHoja of hojasAProcesar) {
-          if (libro.Sheets[nombreHoja]) {
-            XLSX.utils.book_append_sheet(wbFiltrado, libro.Sheets[nombreHoja], nombreHoja);
+        let wbXml = await zip.file('xl/workbook.xml').async('string');
+        wbXml = wbXml.replace(/<sheet\b([^>]*?)name="([^"]+)"([^>]*?)(\/?)>/gi, (match, p1, name, p2, slash) => {
+          if (hojasAProcesar.includes(name)) {
+            return match.replace(/\s+state="[^"]+"/, '');
           }
+          if (match.includes('state=')) {
+            return match.replace(/state="[^"]+"/, 'state="hidden"');
+          }
+          return `<sheet${p1}name="${name}"${p2} state="hidden"${slash}>`;
+        });
+        zip.file('xl/workbook.xml', wbXml);
+        modificado = true;
+      }
+
+      // 2. Configurar orientación landscape y fit-to-page en las hojas para que las columnas anchas no se trunquen
+      const sheetFiles = Object.keys(zip.files).filter(k => /^xl\/worksheets\/sheet\d+\.xml$/i.test(k));
+      for (const sf of sheetFiles) {
+        let sXml = await zip.file(sf).async('string');
+        if (/<sheetPr\b[^>]*>/i.test(sXml)) {
+          if (!sXml.includes('fitToPage')) {
+            sXml = sXml.replace(/<sheetPr\b([^>]*)>/i, '<sheetPr$1><pageSetUpPr fitToPage="1"/>');
+          }
+        } else {
+          sXml = sXml.replace(/<worksheet\b([^>]*)>/i, '<worksheet$1><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
         }
-        archivoTemporalFiltrado = path.join(dirSalida, `${nombreBase}_sel.xlsx`);
-        XLSX.writeFile(wbFiltrado, archivoTemporalFiltrado);
+        if (/<pageSetup\b[^>]*\/>/i.test(sXml)) {
+          sXml = sXml.replace(/<pageSetup\b[^>]*\/>/i, '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0" paperSize="9"/>');
+        } else if (/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/i.test(sXml)) {
+          sXml = sXml.replace(/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/i, '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0" paperSize="9"/>');
+        } else {
+          sXml = sXml.replace(/<\/worksheet>/i, '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0" paperSize="9"/></worksheet>');
+        }
+        zip.file(sf, sXml);
+        modificado = true;
+      }
+
+      if (modificado) {
+        archivoTemporalFiltrado = path.join(dirSalida, `${nombreBase}_prep.xlsx`);
+        const nuevoBuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+        await fs.promises.writeFile(archivoTemporalFiltrado, nuevoBuf);
         rutaExcelAConvertir = archivoTemporalFiltrado;
       }
 
-      const nombreBaseAConvertir = path.basename(rutaExcelAConvertir, path.extname(rutaExcelAConvertir));
       const urlPerfil = `file://${loProfile.replace(/\\/g, '/')}`;
-      const comandoLo = await construirComandoLibreOffice(binarioLo, urlPerfil, dirSalida, rutaExcelAConvertir);
-      
-      const resultadoExec = await execPromesa(comandoLo, {
-        timeout: 60000,
-        env: { ...process.env, HOME: '/tmp' }
+      const archivoGenerado = await ejecutarLibreOfficeConFallback({
+        binarioLo,
+        urlPerfil,
+        dirSalida,
+        rutaArchivo: rutaExcelAConvertir
       });
-      console.log('[Excel] LibreOffice stdout:', resultadoExec.stdout, 'stderr:', resultadoExec.stderr);
 
-      let archivoGenerado = path.join(dirSalida, `${nombreBaseAConvertir}.pdf`);
-      if (!fs.existsSync(archivoGenerado) || fs.statSync(archivoGenerado).size === 0) {
-        try {
-          const archivos = fs.readdirSync(dirSalida);
-          const coincide = archivos.find(f => f.endsWith('.pdf') && (f.startsWith(nombreBaseAConvertir) || f.includes(nombreBaseAConvertir.slice(0, 15))));
-          if (coincide) {
-            archivoGenerado = path.join(dirSalida, coincide);
-          }
-        } catch (_) {}
-      }
-
-      if (fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
+      if (archivoGenerado && fs.existsSync(archivoGenerado) && fs.statSync(archivoGenerado).size > 0) {
         if (archivoGenerado !== rutaFinalPdf) {
           fs.renameSync(archivoGenerado, rutaFinalPdf);
         }
@@ -322,7 +347,7 @@ export async function convertirExcelConHojasSeleccionadas({
         };
       }
     } catch (errLo) {
-      console.error('[Excel] LibreOffice falló:', errLo.message, errLo.stdout, errLo.stderr);
+      console.error('[Excel] LibreOffice falló:', errLo.message);
     } finally {
       if (archivoTemporalFiltrado && fs.existsSync(archivoTemporalFiltrado)) {
         try { fs.unlinkSync(archivoTemporalFiltrado); } catch (_) {}

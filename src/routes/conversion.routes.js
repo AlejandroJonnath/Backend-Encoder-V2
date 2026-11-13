@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { subirArchivos } from '../middlewares/upload.middleware.js';
-import { inspeccionarExcelController, procesarExcelAPdfController, convertirWordController, convertirPowerPointController, convertirTxtController, convertirImagenController } from '../controllers/conversion.controller.js';
+import { inspeccionarExcelController, procesarExcelAPdfController, convertirWordController, convertirTxtController, convertirImagenController } from '../controllers/conversion.controller.js';
 
 const router = Router();
 
@@ -11,8 +11,6 @@ router.post('/excel/procesar-pdf', procesarExcelAPdfController);
 // Conversiones de documentos a PDF
 //Word
 router.post('/convertir/word', subirArchivos.single('archivo'), convertirWordController);
-//Powerpoint
-router.post('/convertir/powerpoint', subirArchivos.single('archivo'), convertirPowerPointController);
 //Bloc de Notas
 router.post('/convertir/txt', subirArchivos.single('archivo'), convertirTxtController);
 //Imágenes PDF, JPG, JPEG

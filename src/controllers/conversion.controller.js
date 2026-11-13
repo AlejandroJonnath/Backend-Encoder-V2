@@ -142,48 +142,7 @@ export async function convertirWordController(req, res, next) {
   }
 }
 
-// B. PowerPoint a PDF
-export async function convertirPowerPointController(req, res, next) {
-
-  let rutaEntrada = null;
-
-  try {
-
-    const archivo = req.file;
-
-    if (!archivo) {
-
-      throw new AppError('Sube una presentación PowerPoint (.pptx o .ppt).', 400);
-
-    }
-
-    rutaEntrada = archivo.path;
-
-    const extValidas = ['.pptx', '.ppt'];
-    const mimesValidos = ['presentationml', 'powerpoint', 'officedocument.presentation'];
-
-    if (!esFormatoValido(archivo, extValidas, mimesValidos)) {
-
-      throw new AppError(`El archivo seleccionado no es una presentación PowerPoint válida. (Recibido: ${archivo.originalname})`, 400);
-
-    }
-
-    const resultado = await convertirOfficeAPdf(archivo.path);
-
-    return responderArchivoOJson(req, res, resultado.rutaArchivo, resultado.nombreArchivo);
-
-  } catch (err) {
-    if (err instanceof AppError) {
-      next(err);
-    } else {
-      next(new AppError(`No se pudo convertir la presentación PowerPoint a PDF: ${err.message}`, 500));
-    }
-  } finally {
-    eliminarArchivoSeguro(rutaEntrada);
-  }
-}
-
-// C. Bloc de notas (.txt) a PDF
+// B. Bloc de notas (.txt) a PDF
 export async function convertirTxtController(req, res, next) {
   let rutaEntrada = null;
   try {
